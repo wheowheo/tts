@@ -68,20 +68,67 @@ fn vowel_formants(phoneme: &str) -> FormantParams {
     }
 }
 
-/// 글로탈 펄스 파형 생성 (성대 진동 시뮬레이션)
-fn glottal_pulse(phase: f64) -> f64 {
-    // Rosenberg 모델 근사
+/// 간단한 PRNG (xorshift32) — 지터/시머용
+struct Rng(u32);
+impl Rng {
+    fn new(seed: u32) -> Self { Rng(seed) }
+    /// -1.0 ~ 1.0 범위의 랜덤 값
+    fn next_f64(&mut self) -> f64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 17;
+        self.0 ^= self.0 << 5;
+        (self.0 as f64 / u32::MAX as f64) * 2.0 - 1.0
+    }
+}
+
+/// LF(Liljencrants-Fant) 글로탈 펄스 모델
+/// Rosenberg 대비: 복귀기(return phase) 추가, 더 풍성한 고조파
+fn glottal_pulse_lf(phase: f64) -> f64 {
     let p = phase % 1.0;
+    // Te=0.4 (개방기 끝), Tp=0.65 (폐쇄기 끝), Tc=1.0
     if p < 0.4 {
-        // 개방기: 상승
+        // 개방기: 사인파 성분 포함 — 더 자연스러운 상승
         let t = p / 0.4;
-        3.0 * t * t - 2.0 * t * t * t
-    } else if p < 0.6 {
-        // 폐쇄기: 하강
-        let t = (p - 0.4) / 0.2;
-        1.0 - t * t
+        let sin_component = (std::f64::consts::PI * t).sin();
+        // Hermite-like smooth rise with sinusoidal enrichment
+        let poly = t * t * (3.0 - 2.0 * t);
+        poly * 0.7 + sin_component * 0.3
+    } else if p < 0.65 {
+        // 폐쇄기: 급격한 하강 (성대 접촉)
+        let t = (p - 0.4) / 0.25;
+        let decay = 1.0 - t;
+        decay * decay // 2차 감쇠 — Rosenberg보다 자연스러움
+    } else if p < 0.85 {
+        // 복귀기(return phase): 지수 감쇠로 원위치
+        // 이 구간이 Rosenberg에 없던 핵심 — 음색에 따뜻함 추가
+        let t = (p - 0.65) / 0.20;
+        -0.2 * (-3.0 * t).exp() // 음의 복귀, 지수 감쇠
     } else {
         0.0
+    }
+}
+
+/// 기식성(aspiration) 노이즈 혼합용 — 자연 음성에는 항상 약간의 기류 노이즈 존재
+fn aspiration_noise(rng: &mut Rng) -> f64 {
+    rng.next_f64() * 0.03 // 3% 기식 노이즈
+}
+
+/// 1차 로우패스 필터 상태 — 스펙트럼 기울기(spectral tilt) 적용용
+struct LowPassState {
+    prev: f64,
+    alpha: f64, // 0.0~1.0, 낮을수록 더 많이 깎음
+}
+
+impl LowPassState {
+    fn new(cutoff_ratio: f64) -> Self {
+        // alpha ≈ cutoff / (cutoff + samplerate/(2π))
+        // 간단히: 0.3이면 약 -12dB/octave 효과
+        LowPassState { prev: 0.0, alpha: cutoff_ratio }
+    }
+    fn process(&mut self, input: f64) -> f64 {
+        let output = self.alpha * input + (1.0 - self.alpha) * self.prev;
+        self.prev = output;
+        output
     }
 }
 
@@ -146,30 +193,52 @@ fn synthesize_consonant(phoneme: &str, duration_ms: f32, pitch_hz: f32, amplitud
                 }
             }
         }
-        // 비음: 성대 진동 + 비강 공명
+        // 비음: 성대 진동 + 비강 공명 (LF 글로탈 + 지터/시머)
         "n" | "m" | "ng" => {
             let f0 = pitch_hz as f64;
-            let mut phase = 0.0;
+            let mut phase: f64 = 0.0;
+            let mut rng = Rng::new(7919);
+            let mut prev_phase = 0.0_f64;
+            let mut jitter_val = 0.0_f64;
+            let mut shimmer_val = 0.0_f64;
             let mut res = ResonatorState::new();
+            let mut tilt = LowPassState::new(0.35);
             for i in 0..num_samples {
                 let env = envelope(i, num_samples, 0.1, 0.1);
-                let glottal = glottal_pulse(phase);
-                let nasal = res.process(glottal, 250.0, 100.0, SAMPLE_RATE as f64);
+                if phase.floor() > prev_phase.floor() {
+                    jitter_val = rng.next_f64() * 0.015;
+                    shimmer_val = rng.next_f64() * 0.03;
+                }
+                prev_phase = phase;
+                let glottal = glottal_pulse_lf(phase) * (1.0 + shimmer_val);
+                let tilted = tilt.process(glottal);
+                let nasal = res.process(tilted, 250.0, 100.0, SAMPLE_RATE as f64);
                 samples.push(nasal * amp * env * 2.0);
-                phase += f0 / SAMPLE_RATE as f64;
+                phase += (f0 * (1.0 + jitter_val)) / SAMPLE_RATE as f64;
             }
         }
-        // 반모음/글라이드
+        // 반모음/글라이드 (LF 글로탈)
         "w" | "y" | "kw" => {
             let f0 = pitch_hz as f64;
-            let mut phase = 0.0;
+            let mut phase: f64 = 0.0;
+            let mut rng = Rng::new(6151);
+            let mut prev_phase = 0.0_f64;
+            let mut jitter_val = 0.0_f64;
+            let mut shimmer_val = 0.0_f64;
             let mut res = ResonatorState::new();
+            let mut tilt = LowPassState::new(0.35);
             for i in 0..num_samples {
                 let env = envelope(i, num_samples, 0.15, 0.15);
-                let glottal = glottal_pulse(phase);
-                let out = res.process(glottal, 400.0, 100.0, SAMPLE_RATE as f64);
+                if phase.floor() > prev_phase.floor() {
+                    jitter_val = rng.next_f64() * 0.012;
+                    shimmer_val = rng.next_f64() * 0.025;
+                }
+                prev_phase = phase;
+                let glottal = glottal_pulse_lf(phase) * (1.0 + shimmer_val);
+                let tilted = tilt.process(glottal);
+                let out = res.process(tilted, 400.0, 100.0, SAMPLE_RATE as f64);
                 samples.push(out * amp * env * 2.0);
-                phase += f0 / SAMPLE_RATE as f64;
+                phase += (f0 * (1.0 + jitter_val)) / SAMPLE_RATE as f64;
             }
         }
         // 복합 자음 (k-s 등)
@@ -184,17 +253,28 @@ fn synthesize_consonant(phoneme: &str, duration_ms: f32, pitch_hz: f32, amplitud
                 samples.push(noise() * amp * env);
             }
         }
-        // 유음
+        // 유음 (LF 글로탈)
         "r" | "l" => {
             let f0 = pitch_hz as f64;
-            let mut phase = 0.0;
+            let mut phase: f64 = 0.0;
+            let mut rng = Rng::new(3571);
+            let mut prev_phase = 0.0_f64;
+            let mut jitter_val = 0.0_f64;
+            let mut shimmer_val = 0.0_f64;
             let mut res = ResonatorState::new();
+            let mut tilt = LowPassState::new(0.35);
             for i in 0..num_samples {
                 let env = envelope(i, num_samples, 0.15, 0.15);
-                let glottal = glottal_pulse(phase);
-                let lateral = res.process(glottal, 350.0, 80.0, SAMPLE_RATE as f64);
+                if phase.floor() > prev_phase.floor() {
+                    jitter_val = rng.next_f64() * 0.015;
+                    shimmer_val = rng.next_f64() * 0.03;
+                }
+                prev_phase = phase;
+                let glottal = glottal_pulse_lf(phase) * (1.0 + shimmer_val);
+                let tilted = tilt.process(glottal);
+                let lateral = res.process(tilted, 350.0, 80.0, SAMPLE_RATE as f64);
                 samples.push(lateral * amp * env * 2.0);
-                phase += f0 / SAMPLE_RATE as f64;
+                phase += (f0 * (1.0 + jitter_val)) / SAMPLE_RATE as f64;
             }
         }
         // 파찰음
@@ -219,7 +299,7 @@ fn synthesize_consonant(phoneme: &str, duration_ms: f32, pitch_hz: f32, amplitud
     samples
 }
 
-/// 모음 합성: 포먼트 합성
+/// 모음 합성: 포먼트 합성 (LF 글로탈 소스 + 지터/시머 + 스펙트럼 기울기)
 fn synthesize_vowel(phoneme: &str, duration_ms: f32, pitch_hz: f32, amplitude: f32) -> Vec<f64> {
     let num_samples = (duration_ms as f64 / 1000.0 * SAMPLE_RATE as f64) as usize;
     let formants = vowel_formants(phoneme);
@@ -227,26 +307,46 @@ fn synthesize_vowel(phoneme: &str, duration_ms: f32, pitch_hz: f32, amplitude: f
     let amp = amplitude as f64;
 
     let mut samples = Vec::with_capacity(num_samples);
-    let mut phase = 0.0;
+    let mut phase: f64 = 0.0;
+    let mut rng = Rng::new(phoneme.as_bytes().iter().fold(42u32, |a, &b| a.wrapping_mul(31).wrapping_add(b as u32)));
     let mut res1 = ResonatorState::new();
     let mut res2 = ResonatorState::new();
     let mut res3 = ResonatorState::new();
+    let mut tilt = LowPassState::new(0.35); // 스펙트럼 기울기: ~-12dB/oct
+
+    // 지터/시머는 글로탈 주기 단위로 갱신
+    let mut jitter_val = 0.0_f64;
+    let mut shimmer_val = 0.0_f64;
+    let mut prev_phase = 0.0_f64;
 
     for i in 0..num_samples {
         let env = envelope(i, num_samples, 0.05, 0.1);
 
-        // 글로탈 소스
-        let source = glottal_pulse(phase);
+        // 글로탈 주기 경계 감지 → 지터/시머 갱신
+        let cur_cycle = phase.floor();
+        if cur_cycle > prev_phase.floor() {
+            jitter_val = rng.next_f64() * 0.015;   // ±1.5% 피치 변동
+            shimmer_val = rng.next_f64() * 0.03;    // ±3% 진폭 변동
+        }
+        prev_phase = phase;
+
+        // LF 글로탈 소스 + 기식 노이즈
+        let source = glottal_pulse_lf(phase) * (1.0 + shimmer_val)
+            + aspiration_noise(&mut rng);
+
+        // 스펙트럼 기울기 적용 (고주파 감쇠)
+        let source_tilted = tilt.process(source);
 
         // 포먼트 필터 적용 (병렬 합성)
-        let f1_out = res1.process(source, formants.f1, formants.bw1, SAMPLE_RATE as f64);
-        let f2_out = res2.process(source, formants.f2, formants.bw2, SAMPLE_RATE as f64);
-        let f3_out = res3.process(source, formants.f3, formants.bw3, SAMPLE_RATE as f64);
+        let f1_out = res1.process(source_tilted, formants.f1, formants.bw1, SAMPLE_RATE as f64);
+        let f2_out = res2.process(source_tilted, formants.f2, formants.bw2, SAMPLE_RATE as f64);
+        let f3_out = res3.process(source_tilted, formants.f3, formants.bw3, SAMPLE_RATE as f64);
 
         let sample = (f1_out * 1.0 + f2_out * 0.7 + f3_out * 0.3) * amp * env;
         samples.push(sample);
 
-        phase += f0 / SAMPLE_RATE as f64;
+        // 피치 진행 (지터 적용)
+        phase += (f0 * (1.0 + jitter_val)) / SAMPLE_RATE as f64;
     }
 
     samples
