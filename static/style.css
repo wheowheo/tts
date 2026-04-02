@@ -112,6 +112,19 @@ button:hover { opacity: 0.85; }
 button:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn-secondary { background: var(--surface-alt); border: 1px solid var(--border); }
 
+.engine-status {
+    margin-top: 0.5rem;
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    padding: 0.4rem 0.6rem;
+    background: var(--bg);
+    border-radius: 6px;
+    display: none;
+}
+.engine-status.visible { display: block; }
+.engine-status .ok { color: var(--success); }
+.engine-status .missing { color: var(--primary); }
+
 /* Step 2: Listen */
 .listen-row {
     display: flex;

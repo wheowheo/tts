@@ -43,14 +43,33 @@ async function synthesize() {
     btn.disabled = true;
     btn.textContent = '생성 중...';
 
-    try {
-        const res = await fetch(`${API_BASE}/api/synthesize`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text, language: lang, params: getTuningParams() }),
-        });
+    const engine = document.getElementById('engine-select').value;
 
-        const data = await res.json();
+    try {
+        let data;
+        if (engine === 'neural') {
+            const res = await fetch(`${API_BASE}/api/neural-synthesize`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text, language: lang }),
+            });
+            data = await res.json();
+            if (data.error) {
+                alert('신경망 TTS 오류:\n' + data.error);
+                btn.disabled = false;
+                btn.textContent = '합성';
+                return;
+            }
+            // neural 응답을 formant 형식으로 래핑
+            data.pipeline = data.pipeline || [];
+        } else {
+            const res = await fetch(`${API_BASE}/api/synthesize`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text, language: lang, params: getTuningParams() }),
+            });
+            data = await res.json();
+        }
         renderResults(data);
 
         // Step 2, 3 표시
@@ -822,6 +841,23 @@ function switchDetail(mode) {
     }
 }
 
+async function checkEngines() {
+    try {
+        const res = await fetch(`${API_BASE}/api/engines`);
+        const info = await res.json();
+        const el = document.getElementById('engine-status');
+        const ko = info.korean_ready ? '<span class="ok">한국어 준비됨</span>' : '<span class="missing">한국어: pip install piper-tts + 모델 다운로드 필요</span>';
+        const en = info.english_ready ? '<span class="ok">영어 준비됨</span>' : '<span class="missing">영어: pip install kokoro-tts 필요</span>';
+        el.innerHTML = `신경망 엔진: ${ko} | ${en}`;
+
+        // 엔진 선택 변경 시 상태 표시
+        document.getElementById('engine-select').addEventListener('change', (e) => {
+            el.classList.toggle('visible', e.target.value === 'neural');
+        });
+    } catch (e) {}
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     loadPipeline();
+    checkEngines();
 });

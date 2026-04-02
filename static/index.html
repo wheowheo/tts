@@ -25,8 +25,13 @@
                     <option value="ko" selected>한국어</option>
                     <option value="en">English</option>
                 </select>
+                <select id="engine-select">
+                    <option value="formant">포먼트 합성 (내장)</option>
+                    <option value="neural">신경망 TTS (설치 필요)</option>
+                </select>
                 <button id="synthesize-btn" onclick="synthesize()">합성</button>
             </div>
+            <div id="engine-status" class="engine-status"></div>
         </section>
 
         <!-- Step 2: 듣기 + 품질 확인 -->

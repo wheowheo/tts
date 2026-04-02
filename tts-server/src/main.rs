@@ -8,7 +8,7 @@ use tower_http::services::ServeDir;
 use tower_http::cors::CorsLayer;
 use tts_core::{
     PipelineInfo, PipelineResult, PipelineStage, SynthesizeRequest, SynthesizeResponse,
-    english, hangul, prosody, synthesis,
+    english, hangul, neural, prosody, synthesis,
 };
 
 #[derive(serde::Deserialize)]
@@ -183,13 +183,51 @@ fn base64_encode(data: &[u8]) -> String {
     result
 }
 
+/// 신경망 TTS 합성 엔드포인트
+async fn neural_synthesize(Json(req): Json<SynthesizeRequest>) -> Result<Json<serde_json::Value>, StatusCode> {
+    let lang = req.language.as_deref().unwrap_or("ko");
+
+    let result = if lang == "en" {
+        neural::synthesize_english(&req.text)
+    } else {
+        neural::synthesize_korean(&req.text)
+    };
+
+    match result {
+        Ok(audio) => {
+            let audio_base64 = base64_encode(&audio.wav_data);
+            Ok(Json(serde_json::json!({
+                "text": req.text,
+                "audio_base64": audio_base64,
+                "sample_rate": audio.sample_rate,
+                "engine": audio.engine,
+                "language": lang,
+            })))
+        }
+        Err(msg) => {
+            Ok(Json(serde_json::json!({
+                "error": msg,
+                "text": req.text,
+                "language": lang,
+            })))
+        }
+    }
+}
+
+/// 엔진 상태 확인 엔드포인트
+async fn get_engines() -> Json<serde_json::Value> {
+    Json(neural::check_engines())
+}
+
 #[tokio::main]
 async fn main() {
     let api_routes = Router::new()
         .route("/pipeline", get(get_pipeline))
         .route("/analyze", post(analyze))
         .route("/prosody", post(generate_prosody))
-        .route("/synthesize", post(synthesize));
+        .route("/synthesize", post(synthesize))
+        .route("/neural-synthesize", post(neural_synthesize))
+        .route("/engines", get(get_engines));
 
     let app = Router::new()
         .nest("/api", api_routes)
