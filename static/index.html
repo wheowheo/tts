@@ -9,95 +9,119 @@
 <body>
     <header>
         <h1>TTS Generator Editor</h1>
-        <p class="subtitle">텍스트 → PCM 변환 파이프라인 시각화</p>
+        <p class="subtitle">텍스트를 소리로 바꾸고, 들으면서 다듬는 도구</p>
     </header>
 
     <main>
-        <section class="input-section">
-            <div class="input-group">
-                <label for="text-input">텍스트 입력</label>
-                <textarea id="text-input" placeholder="여기에 텍스트를 입력하세요 (예: 안녕하세요)" rows="3"></textarea>
+        <!-- Step 1: 입력 + 합성 -->
+        <section class="step-section">
+            <div class="step-header">
+                <span class="step-num">1</span>
+                <h2>텍스트를 입력하고 소리를 만드세요</h2>
             </div>
-            <div class="controls">
+            <div class="input-row">
+                <textarea id="text-input" placeholder="예: 안녕하세요 봉봉 테스트입니다" rows="2">안녕하세요 봉봉 테스트입니다</textarea>
                 <select id="language-select">
                     <option value="ko" selected>한국어</option>
                     <option value="en">English</option>
                 </select>
-                <button id="synthesize-btn" onclick="synthesize()">합성 실행</button>
+                <button id="synthesize-btn" onclick="synthesize()">합성</button>
             </div>
         </section>
 
-        <section class="tuning-section">
-            <h2>튜닝 파라미터</h2>
-            <div class="tuning-grid">
-                <div class="tuning-group">
-                    <label>기본 피치 (Hz)
-                        <span class="tuning-value" id="pitch-value">150</span>
-                    </label>
-                    <input type="range" id="pitch-slider" min="80" max="300" value="150" step="5" oninput="updateTuningValue('pitch')">
-                    <div class="range-labels"><span>80</span><span>300</span></div>
+        <!-- Step 2: 듣기 + 품질 확인 -->
+        <section class="step-section" id="listen-section" style="display:none;">
+            <div class="step-header">
+                <span class="step-num">2</span>
+                <h2>소리를 들어보세요</h2>
+            </div>
+            <div class="listen-row">
+                <button id="play-btn" class="play-big" disabled onclick="playAudio()">재생</button>
+                <button id="stop-btn" class="btn-secondary" onclick="stopAudio()">정지</button>
+                <button id="download-btn" onclick="downloadWav()" disabled class="btn-secondary">WAV 저장</button>
+                <button id="ab-btn" onclick="toggleABCompare()" disabled style="display:none;" class="btn-secondary">A/B 비교</button>
+            </div>
+            <canvas id="waveform-canvas" width="800" height="120"></canvas>
+            <div id="quality-summary" class="quality-summary"></div>
+        </section>
+
+        <!-- Step 3: 튜닝 -->
+        <section class="step-section" id="tuning-section" style="display:none;">
+            <div class="step-header">
+                <span class="step-num">3</span>
+                <h2>마음에 안 드는 부분을 조절하세요</h2>
+                <p class="step-desc">아래 슬라이더를 움직이면 즉시 새로운 소리가 만들어집니다</p>
+            </div>
+
+            <div class="tuning-cards">
+                <div class="tuning-card">
+                    <div class="tc-icon">🎵</div>
+                    <div class="tc-title">목소리 높낮이</div>
+                    <div class="tc-desc">높이면 여성/아이 목소리, 낮추면 남성 목소리</div>
+                    <div class="tc-control">
+                        <span class="tc-label">낮음</span>
+                        <input type="range" id="pitch-slider" min="80" max="300" value="150" step="5" oninput="updateTuningValue('pitch')">
+                        <span class="tc-label">높음</span>
+                    </div>
+                    <div class="tc-value"><span id="pitch-value">150</span> Hz</div>
                 </div>
-                <div class="tuning-group">
-                    <label>속도
-                        <span class="tuning-value" id="speed-value">1.0</span>x
-                    </label>
-                    <input type="range" id="speed-slider" min="0.5" max="2.0" value="1.0" step="0.1" oninput="updateTuningValue('speed')">
-                    <div class="range-labels"><span>0.5x</span><span>2.0x</span></div>
+
+                <div class="tuning-card">
+                    <div class="tc-icon">⏩</div>
+                    <div class="tc-title">말하는 속도</div>
+                    <div class="tc-desc">느리면 또박또박, 빠르면 빨리 말하기</div>
+                    <div class="tc-control">
+                        <span class="tc-label">느림</span>
+                        <input type="range" id="speed-slider" min="0.5" max="2.0" value="1.0" step="0.1" oninput="updateTuningValue('speed')">
+                        <span class="tc-label">빠름</span>
+                    </div>
+                    <div class="tc-value"><span id="speed-value">1.0</span>x</div>
                 </div>
-                <div class="tuning-group">
-                    <label>볼륨
-                        <span class="tuning-value" id="volume-value">1.0</span>
-                    </label>
-                    <input type="range" id="volume-slider" min="0.1" max="2.0" value="1.0" step="0.1" oninput="updateTuningValue('volume')">
-                    <div class="range-labels"><span>0.1</span><span>2.0</span></div>
+
+                <div class="tuning-card">
+                    <div class="tc-icon">🔊</div>
+                    <div class="tc-title">소리 크기</div>
+                    <div class="tc-desc">작으면 속삭이기, 크면 크게 말하기</div>
+                    <div class="tc-control">
+                        <span class="tc-label">작게</span>
+                        <input type="range" id="volume-slider" min="0.1" max="2.0" value="1.0" step="0.1" oninput="updateTuningValue('volume')">
+                        <span class="tc-label">크게</span>
+                    </div>
+                    <div class="tc-value"><span id="volume-value">1.0</span></div>
                 </div>
             </div>
-            <div class="preset-controls">
+
+            <div class="preset-row">
+                <span class="preset-label">빠른 설정:</span>
                 <button onclick="applyPreset('default')">기본값</button>
                 <button onclick="applyPreset('high')">높은 목소리</button>
                 <button onclick="applyPreset('low')">낮은 목소리</button>
                 <button onclick="applyPreset('fast')">빠르게</button>
                 <button onclick="applyPreset('slow')">느리게</button>
-                <button onclick="saveCustomPreset()" class="btn-secondary">현재 값 저장</button>
-                <button onclick="loadCustomPreset()" class="btn-secondary" id="load-preset-btn" disabled>저장된 값 불러오기</button>
             </div>
         </section>
 
-        <section class="pipeline-section">
-            <h2>파이프라인</h2>
-            <div id="pipeline-stages" class="pipeline-container">
-            </div>
-        </section>
+        <!-- Step 4: 상세 분석 (접기 가능) -->
+        <details class="detail-section" id="detail-section">
+            <summary>상세 분석 (파이프라인, 스펙트로그램, 품질 검증)</summary>
 
-        <section class="result-section" id="result-section" style="display:none;">
-            <h2>파이프라인 결과</h2>
-            <div id="pipeline-results" class="results-container"></div>
-        </section>
-
-        <section class="audio-section" id="audio-section" style="display:none;">
-            <h2>오디오 출력</h2>
-            <div class="audio-controls">
-                <div class="audio-buttons">
-                    <button id="play-btn" disabled>재생</button>
-                    <button id="ab-btn" onclick="toggleABCompare()" disabled style="display:none;">A/B 비교</button>
-                    <button id="download-btn" onclick="downloadWav()" disabled class="btn-secondary">WAV 다운로드</button>
-                    <label class="auto-toggle">
-                        <input type="checkbox" id="auto-resynth" onchange="toggleAutoResynth()">
-                        슬라이더 변경 시 자동 재합성
-                    </label>
-                </div>
-                <div class="viz-tabs">
-                    <button class="viz-tab active" onclick="switchViz('waveform')">파형</button>
-                    <button class="viz-tab" onclick="switchViz('spectrogram')">스펙트로그램</button>
-                    <button class="viz-tab" onclick="switchViz('quality')">품질 검증</button>
-                </div>
-                <canvas id="waveform-canvas" width="800" height="200"></canvas>
-                <canvas id="spectrogram-canvas" width="800" height="200" style="display:none;"></canvas>
-                <div id="quality-panel" style="display:none;">
-                    <div id="quality-results" class="quality-grid"></div>
-                </div>
+            <div class="detail-tabs">
+                <button class="detail-tab active" onclick="switchDetail('pipeline')">파이프라인</button>
+                <button class="detail-tab" onclick="switchDetail('spectrogram')">스펙트로그램</button>
+                <button class="detail-tab" onclick="switchDetail('quality')">품질 검증</button>
             </div>
-        </section>
+
+            <div id="detail-pipeline" class="detail-content">
+                <div id="pipeline-stages" class="pipeline-container"></div>
+                <div id="pipeline-results" class="results-container"></div>
+            </div>
+            <div id="detail-spectrogram" class="detail-content" style="display:none;">
+                <canvas id="spectrogram-canvas" width="800" height="200"></canvas>
+            </div>
+            <div id="detail-quality" class="detail-content" style="display:none;">
+                <div id="quality-results" class="quality-grid"></div>
+            </div>
+        </details>
     </main>
 
     <footer>

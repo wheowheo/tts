@@ -41,11 +41,7 @@ async function synthesize() {
     const lang = document.getElementById('language-select').value;
     const btn = document.getElementById('synthesize-btn');
     btn.disabled = true;
-    btn.textContent = '처리 중...';
-
-    document.querySelectorAll('.stage-box').forEach(b => {
-        b.classList.remove('active', 'completed');
-    });
+    btn.textContent = '생성 중...';
 
     try {
         const res = await fetch(`${API_BASE}/api/synthesize`, {
@@ -56,13 +52,16 @@ async function synthesize() {
 
         const data = await res.json();
         renderResults(data);
-        animateStages(data.pipeline);
+
+        // Step 2, 3 표시
+        document.getElementById('listen-section').style.display = 'block';
+        document.getElementById('tuning-section').style.display = 'block';
     } catch (e) {
         console.error('합성 실패:', e);
         alert('합성 요청에 실패했습니다.');
     } finally {
         btn.disabled = false;
-        btn.textContent = '합성 실행';
+        btn.textContent = '합성';
     }
 }
 
@@ -87,15 +86,12 @@ function animateStages(pipeline) {
 }
 
 function renderResults(data) {
-    const section = document.getElementById('result-section');
+    // 파이프라인 결과 (상세 분석 패널)
     const container = document.getElementById('pipeline-results');
-    section.style.display = 'block';
     container.innerHTML = '';
-
     data.pipeline.forEach(step => {
         const card = document.createElement('div');
         card.className = 'result-card';
-
         let content = '';
         if (step.stage === 'JamoDecomposition' && step.data.jamo) {
             content = renderJamoVisual(step.data.jamo);
@@ -106,13 +102,10 @@ function renderResults(data) {
         } else {
             content = `<div class="result-data">${JSON.stringify(step.data, null, 2)}</div>`;
         }
-
         card.innerHTML = `<div class="result-label">${step.label}</div>${content}`;
         container.appendChild(card);
     });
 
-    const audioSection = document.getElementById('audio-section');
-    audioSection.style.display = 'block';
     if (data.audio_base64) {
         lastWavBase64 = data.audio_base64;
         document.getElementById('download-btn').disabled = false;
@@ -346,6 +339,7 @@ function setupAudioPlayback(base64Audio) {
         playBtn.disabled = false;
         playBtn.onclick = playAudio;
         drawWaveform(buffer);
+        showQualitySummary(lastAudioData);
     }).catch(err => {
         console.error('오디오 디코딩 실패:', err);
         // 폴백: WAV 데이터에서 직접 파형 그리기
@@ -784,12 +778,50 @@ function drawSpectrogram(audioData) {
     ctx.fillText(`${duration.toFixed(2)}s`, w / 2, h - 4);
 }
 
-// setupAudioPlayback에서 lastAudioData 저장 (기존 함수에 훅)
-const _origSetup = setupAudioPlayback;
+// === 추가 함수들 ===
+
+function stopAudio() {
+    if (currentSource) {
+        try { currentSource.stop(); } catch(e) {}
+        currentSource = null;
+    }
+    document.getElementById('play-btn').textContent = '재생';
+}
+
+function showQualitySummary(audioData) {
+    const n = audioData.length;
+    let silence = 0;
+    for (let i = 0; i < n; i++) if (Math.abs(audioData[i]) < 0.003) silence++;
+    const silPct = (silence / n * 100).toFixed(0);
+
+    let clicks = 0;
+    for (let i = 1; i < n; i++) if (Math.abs(audioData[i] - audioData[i-1]) > 0.3) clicks++;
+
+    const dur = (n / 44100).toFixed(2);
+    const el = document.getElementById('quality-summary');
+    const silIcon = silPct < 20 ? '✅' : silPct < 35 ? '⚠️' : '❌';
+    const clickIcon = clicks === 0 ? '✅' : clicks < 5 ? '⚠️' : '❌';
+    el.innerHTML = `${dur}초 | 무음 ${silIcon} ${silPct}% | 클릭 ${clickIcon} ${clicks}개 | <em>마음에 안 들면 아래 슬라이더를 조절 후 다시 합성하세요</em>`;
+}
+
+function switchDetail(mode) {
+    document.querySelectorAll('.detail-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.detail-content').forEach(c => c.style.display = 'none');
+
+    if (mode === 'spectrogram') {
+        document.querySelectorAll('.detail-tab')[1].classList.add('active');
+        document.getElementById('detail-spectrogram').style.display = 'block';
+        if (lastAudioData) drawSpectrogram(lastAudioData);
+    } else if (mode === 'quality') {
+        document.querySelectorAll('.detail-tab')[2].classList.add('active');
+        document.getElementById('detail-quality').style.display = 'block';
+        if (lastAudioData) runQualityCheck(lastAudioData);
+    } else {
+        document.querySelectorAll('.detail-tab')[0].classList.add('active');
+        document.getElementById('detail-pipeline').style.display = 'block';
+    }
+}
 
 document.addEventListener('DOMContentLoaded', () => {
     loadPipeline();
-    if (localStorage.getItem('tts-custom-preset')) {
-        document.getElementById('load-preset-btn').disabled = false;
-    }
 });
