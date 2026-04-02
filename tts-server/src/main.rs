@@ -28,7 +28,8 @@ async fn get_pipeline() -> Json<PipelineInfo> {
 
 async fn analyze(Json(req): Json<AnalyzeRequest>) -> Json<serde_json::Value> {
     let normalized = hangul::normalize_text(&req.text);
-    let jamo = hangul::decompose_text(&normalized);
+    let mut jamo = hangul::decompose_text(&normalized);
+    hangul::apply_phonological_rules(&mut jamo);
     let phonemes = hangul::jamo_to_phonemes(&jamo);
 
     Json(serde_json::json!({
@@ -41,7 +42,8 @@ async fn analyze(Json(req): Json<AnalyzeRequest>) -> Json<serde_json::Value> {
 
 async fn generate_prosody(Json(req): Json<ProsodyRequest>) -> Json<serde_json::Value> {
     let normalized = hangul::normalize_text(&req.text);
-    let jamo = hangul::decompose_text(&normalized);
+    let mut jamo = hangul::decompose_text(&normalized);
+    hangul::apply_phonological_rules(&mut jamo);
     let phonemes = hangul::jamo_to_phonemes(&jamo);
     let params = req.params.unwrap_or_default();
     let mut prosody_units = prosody::generate_prosody(&phonemes, &params);
@@ -76,7 +78,8 @@ async fn synthesize(Json(req): Json<SynthesizeRequest>) -> Result<Json<Synthesiz
         )
     } else {
         let normalized = hangul::normalize_text(&req.text);
-        let jamo = hangul::decompose_text(&normalized);
+        let mut jamo = hangul::decompose_text(&normalized);
+        hangul::apply_phonological_rules(&mut jamo);
         let phonemes = hangul::jamo_to_phonemes(&jamo);
         let mut prosody_units = prosody::generate_prosody(&phonemes, &params);
         prosody::insert_pauses(&mut prosody_units, &normalized);

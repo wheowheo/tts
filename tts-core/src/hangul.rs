@@ -163,7 +163,104 @@ pub fn decompose_text(text: &str) -> Vec<JamoResult> {
         .collect()
 }
 
-/// 자모 시퀀스를 음소로 변환
+/// 한국어 음운 규칙 적용 (자모 분해 결과를 변환)
+/// 연음, 경음화, 비음화, 유음화, 구개음화
+pub fn apply_phonological_rules(jamo_list: &mut Vec<JamoResult>) {
+    let len = jamo_list.len();
+    if len < 2 {
+        return;
+    }
+
+    for i in 0..len - 1 {
+        let jong = jamo_list[i].jongseong.clone();
+        let next_cho = jamo_list[i + 1].choseong.clone();
+
+        if jong.is_empty() {
+            continue;
+        }
+
+        // 1. 연음 규칙: 종성 + 초성ㅇ → 종성이 다음 초성으로 이동
+        //    + 구개음화 통합: ㄷ/ㅌ + 이 → ㅈ/ㅊ + 이
+        if next_cho == "ㅇ" {
+            if jamo_list[i + 1].jungseong == "ㅣ" {
+                // 구개음화 (연음과 동시 적용)
+                let palatalized = match jong.as_str() {
+                    "ㄷ" => Some("ㅈ"),
+                    "ㅌ" => Some("ㅊ"),
+                    _ => None,
+                };
+                if let Some(p) = palatalized {
+                    jamo_list[i].jongseong = String::new();
+                    jamo_list[i + 1].choseong = p.to_string();
+                    continue;
+                }
+            }
+            let moved = jong.clone();
+            jamo_list[i].jongseong = String::new();
+            jamo_list[i + 1].choseong = moved;
+            continue;
+        }
+
+        // 2. 비음화: 받침(ㄱ,ㄷ,ㅂ) + 비음(ㄴ,ㅁ) → 받침이 비음으로
+        if matches!(next_cho.as_str(), "ㄴ" | "ㅁ") {
+            let nasalized = match jong.as_str() {
+                "ㄱ" | "ㄲ" | "ㅋ" | "ㄳ" | "ㄺ" => Some("ㅇ"),
+                "ㄷ" | "ㅅ" | "ㅆ" | "ㅈ" | "ㅊ" | "ㅌ" | "ㅎ" => Some("ㄴ"),
+                "ㅂ" | "ㅍ" | "ㄼ" | "ㅄ" => Some("ㅁ"),
+                _ => None,
+            };
+            if let Some(n) = nasalized {
+                jamo_list[i].jongseong = n.to_string();
+                continue;
+            }
+        }
+
+        // 3. 경음화: 받침(ㄱ,ㄷ,ㅂ) + 평음(ㄱ,ㄷ,ㅂ,ㅅ,ㅈ) → 평음이 경음으로
+        if matches!(jong.as_str(), "ㄱ" | "ㄲ" | "ㅋ" | "ㄳ" | "ㄺ"
+            | "ㄷ" | "ㅅ" | "ㅆ" | "ㅈ" | "ㅊ" | "ㅌ"
+            | "ㅂ" | "ㅍ" | "ㄼ" | "ㅄ")
+        {
+            let tensified = match next_cho.as_str() {
+                "ㄱ" => Some("ㄲ"),
+                "ㄷ" => Some("ㄸ"),
+                "ㅂ" => Some("ㅃ"),
+                "ㅅ" => Some("ㅆ"),
+                "ㅈ" => Some("ㅉ"),
+                _ => None,
+            };
+            if let Some(t) = tensified {
+                jamo_list[i + 1].choseong = t.to_string();
+                continue;
+            }
+        }
+
+        // 4. 유음화: ㄴ+ㄹ → ㄹ+ㄹ, ㄹ+ㄴ → ㄹ+ㄹ
+        if jong == "ㄴ" && next_cho == "ㄹ" {
+            jamo_list[i].jongseong = "ㄹ".to_string();
+            continue;
+        }
+        if jong == "ㄹ" && next_cho == "ㄴ" {
+            jamo_list[i + 1].choseong = "ㄹ".to_string();
+            continue;
+        }
+
+        // 5. 구개음화: ㄷ/ㅌ + 이 → ㅈ/ㅊ + 이
+        if jamo_list[i + 1].jungseong == "ㅣ" {
+            let palatalized = match jong.as_str() {
+                "ㄷ" => Some("ㅈ"),
+                "ㅌ" => Some("ㅊ"),
+                _ => None,
+            };
+            if let Some(p) = palatalized {
+                jamo_list[i].jongseong = String::new();
+                jamo_list[i + 1].choseong = p.to_string();
+                continue;
+            }
+        }
+    }
+}
+
+/// 자모 시퀀스를 음소로 변환 (음운 규칙 적용 후)
 pub fn jamo_to_phonemes(jamo_list: &[JamoResult]) -> Vec<Phoneme> {
     let mut phonemes = Vec::new();
 
@@ -283,5 +380,47 @@ mod tests {
     fn test_non_hangul_ignored() {
         assert!(decompose_syllable('A').is_none());
         assert!(decompose_syllable('1').is_none());
+    }
+
+    #[test]
+    fn test_liaison() {
+        // 연음: "한인" → 하닌 (종성ㄴ + 초성ㅇ → 초성ㄴ)
+        let mut jamo = decompose_text("한인");
+        apply_phonological_rules(&mut jamo);
+        assert_eq!(jamo[0].jongseong, "");    // 종성 비움
+        assert_eq!(jamo[1].choseong, "ㄴ");   // 초성으로 이동
+    }
+
+    #[test]
+    fn test_nasalization() {
+        // 비음화: "국민" → 궁민 (ㄱ+ㅁ → ㅇ+ㅁ)
+        let mut jamo = decompose_text("국민");
+        apply_phonological_rules(&mut jamo);
+        assert_eq!(jamo[0].jongseong, "ㅇ");
+    }
+
+    #[test]
+    fn test_tensification() {
+        // 경음화: "학교" → 학꾜 (ㄱ+ㄱ → ㄱ+ㄲ)
+        let mut jamo = decompose_text("학교");
+        apply_phonological_rules(&mut jamo);
+        assert_eq!(jamo[1].choseong, "ㄲ");
+    }
+
+    #[test]
+    fn test_lateralization() {
+        // 유음화: "신라" → 실라 (ㄴ+ㄹ → ㄹ+ㄹ)
+        let mut jamo = decompose_text("신라");
+        apply_phonological_rules(&mut jamo);
+        assert_eq!(jamo[0].jongseong, "ㄹ");
+    }
+
+    #[test]
+    fn test_palatalization() {
+        // 구개음화: "같이" → 가치 (ㅌ+이 → ㅊ+이)
+        let mut jamo = decompose_text("같이");
+        apply_phonological_rules(&mut jamo);
+        assert_eq!(jamo[0].jongseong, "");
+        assert_eq!(jamo[1].choseong, "ㅊ");
     }
 }
