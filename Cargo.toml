@@ -1,0 +1,3 @@
+[workspace]
+members = ["tts-core", "tts-server"]
+resolver = "2"
