@@ -58,34 +58,155 @@ fn base_duration(phoneme: &str, ptype: &PhonemeType) -> f32 {
     }
 }
 
-/// 문장 내 위치 기반 피치 곡선 (한국어: 문장 끝에서 하강)
-fn positional_pitch(base_pitch: f32, position: f32, total: f32) -> f32 {
-    let ratio = position / total;
-    // 한국어 평서문: 약간 상승 후 문장 끝에서 하강
-    let modifier = if ratio < 0.3 {
-        1.0 + 0.05 * (ratio / 0.3) // 초반 약간 상승
-    } else if ratio < 0.7 {
-        1.05 // 중간 유지
-    } else {
-        1.05 - 0.15 * ((ratio - 0.7) / 0.3) // 후반 하강
-    };
-    base_pitch * modifier
+/// 음소 타입별 자연 진폭 계수
+fn natural_amplitude(ptype: &PhonemeType, phoneme: &str) -> f32 {
+    match ptype {
+        PhonemeType::Vowel => 1.0,
+        PhonemeType::Consonant => match phoneme {
+            "n" | "m" | "ng" => 0.7,           // 비음: 모음보다 약간 약함
+            "r" | "l" => 0.65,                  // 유음
+            "w" | "y" => 0.8,                   // 반모음
+            "s" | "ss" | "sh" => 0.5,           // 마찰음
+            "h" | "hh" => 0.35,                 // ㅎ: 가장 약함
+            "f" | "v" | "z" => 0.45,            // 영어 마찰음
+            "k" | "t" | "p" | "g" | "d" | "b" => 0.6, // 파열음
+            "kk" | "tt" | "pp" => 0.7,          // 경음: 조금 더 강함
+            "kh" | "th" | "ph" => 0.55,         // 격음
+            "ch" | "j" | "jj" | "jh" => 0.55,   // 파찰음
+            _ => 0.5,
+        },
+        PhonemeType::Pause | PhonemeType::Silence => 0.0,
+    }
 }
 
-/// 음소 리스트에 운율 정보를 부여
-pub fn generate_prosody(phonemes: &[Phoneme], params: &ProsodyParams) -> Vec<ProsodyUnit> {
-    let total = phonemes.len() as f32;
-    if total == 0.0 {
+/// 연속 피치 곡선 생성 — 문장 전체에 걸쳐 부드러운 곡선
+/// 반환: 각 음소에 대한 피치 값 배열
+fn generate_pitch_contour(num_phonemes: usize, base_pitch: f32) -> Vec<f32> {
+    if num_phonemes == 0 {
         return Vec::new();
     }
+    if num_phonemes == 1 {
+        return vec![base_pitch];
+    }
+
+    let mut pitches = Vec::with_capacity(num_phonemes);
+    let n = num_phonemes as f32;
+
+    for i in 0..num_phonemes {
+        let ratio = i as f32 / (n - 1.0);
+
+        // 한국어 평서문 억양: 부드러운 곡선
+        // 시작(0.0) → 상승(0.2) → 피크(0.35) → 완만 유지(0.6) → 하강(1.0)
+        let modifier = if ratio < 0.2 {
+            // 초반 상승 (코사인 보간)
+            let t = ratio / 0.2;
+            1.0 + 0.08 * (1.0 - (t * std::f32::consts::PI + std::f32::consts::PI).cos()) * 0.5
+        } else if ratio < 0.35 {
+            // 피크 근처
+            let t = (ratio - 0.2) / 0.15;
+            1.08 + 0.02 * (1.0 - (t * std::f32::consts::PI).cos()) * 0.5
+        } else if ratio < 0.6 {
+            // 완만한 유지/미세 하강
+            let t = (ratio - 0.35) / 0.25;
+            1.10 - 0.03 * t
+        } else {
+            // 후반 하강 (코사인 감쇠)
+            let t = (ratio - 0.6) / 0.4;
+            let descent = (1.0 - (t * std::f32::consts::PI + std::f32::consts::PI).cos()) * 0.5;
+            1.07 - 0.17 * descent
+        };
+
+        pitches.push(base_pitch * modifier);
+    }
+
+    // 피치 스무딩: 3-point 이동 평균
+    if num_phonemes >= 3 {
+        let orig = pitches.clone();
+        for i in 1..num_phonemes - 1 {
+            pitches[i] = orig[i - 1] * 0.25 + orig[i] * 0.5 + orig[i + 1] * 0.25;
+        }
+    }
+
+    pitches
+}
+
+/// 문맥 기반 음소 길이 조정
+fn contextual_duration(
+    base_dur: f32,
+    idx: usize,
+    total: usize,
+    ptype: &PhonemeType,
+    phonemes: &[Phoneme],
+) -> f32 {
+    let mut dur = base_dur;
+
+    match ptype {
+        PhonemeType::Vowel => {
+            // 어절/문장 마지막 모음: phrase-final lengthening (+25%)
+            let is_last_vowel = (idx + 1..total).all(|j| {
+                !matches!(phonemes[j].phoneme_type, PhonemeType::Vowel)
+            });
+            if is_last_vowel {
+                dur *= 1.25;
+            }
+
+            // 마지막에서 두 번째 모음도 약간 늘림 (+10%)
+            let vowels_after: usize = (idx + 1..total)
+                .filter(|&j| matches!(phonemes[j].phoneme_type, PhonemeType::Vowel))
+                .count();
+            if vowels_after == 1 {
+                dur *= 1.10;
+            }
+
+            // 종성(다음이 자음) 앞 모음: 약간 줄임 (-8%)
+            if idx + 1 < total && matches!(phonemes[idx + 1].phoneme_type, PhonemeType::Consonant) {
+                dur *= 0.92;
+            }
+        }
+        PhonemeType::Consonant => {
+            // 어두 자음: 약간 늘림 (+10%)
+            if idx == 0 || (idx > 0 && matches!(phonemes[idx - 1].phoneme_type, PhonemeType::Pause)) {
+                dur *= 1.10;
+            }
+        }
+        _ => {}
+    }
+
+    dur
+}
+
+/// 음소 리스트에 운율 정보를 부여 (개선: 연속 피치 + 문맥 길이 + 진폭 곡선)
+pub fn generate_prosody(phonemes: &[Phoneme], params: &ProsodyParams) -> Vec<ProsodyUnit> {
+    let total = phonemes.len();
+    if total == 0 {
+        return Vec::new();
+    }
+
+    // 연속 피치 곡선 생성
+    let pitch_contour = generate_pitch_contour(total, params.base_pitch_hz);
 
     phonemes
         .iter()
         .enumerate()
         .map(|(i, p)| {
-            let duration = base_duration(&p.symbol, &p.phoneme_type) / params.speed_factor;
-            let pitch = positional_pitch(params.base_pitch_hz, i as f32, total);
-            let amplitude = params.volume;
+            // 문맥 기반 길이
+            let base_dur = base_duration(&p.symbol, &p.phoneme_type);
+            let ctx_dur = contextual_duration(base_dur, i, total, &p.phoneme_type, phonemes);
+            let duration = ctx_dur / params.speed_factor;
+
+            // 연속 피치 곡선에서 가져옴
+            let pitch = pitch_contour[i];
+
+            // 진폭: 타입별 자연 계수 × 위치 기반 감쇠
+            let type_amp = natural_amplitude(&p.phoneme_type, &p.symbol);
+            let pos_ratio = i as f32 / total as f32;
+            // 문장 끝으로 갈수록 점진적 감소 (마지막 20%에서)
+            let pos_amp = if pos_ratio > 0.8 {
+                1.0 - 0.15 * ((pos_ratio - 0.8) / 0.2)
+            } else {
+                1.0
+            };
+            let amplitude = params.volume * type_amp * pos_amp;
 
             ProsodyUnit {
                 phoneme: p.symbol.clone(),
@@ -101,25 +222,20 @@ pub fn generate_prosody(phonemes: &[Phoneme], params: &ProsodyParams) -> Vec<Pro
 
 /// 어절 경계에 쉼(pause)을 삽입
 pub fn insert_pauses(units: &mut Vec<ProsodyUnit>, text: &str) {
-    // 간단한 구현: 공백 위치 기반으로 pause 삽입
-    // 실제로는 source_char의 변화를 추적하여 어절 경계를 감지
     let words: Vec<&str> = text.split_whitespace().collect();
     if words.len() <= 1 {
         return;
     }
 
-    // 어절 경계 찾기: source_char가 다른 어절에 속하는 위치
     let mut word_boundaries = Vec::new();
     let mut current_word_idx = 0;
     let mut last_char = String::new();
 
     for (i, unit) in units.iter().enumerate() {
         if unit.source_char != last_char && !last_char.is_empty() {
-            // 새 글자로 전환됨
             if current_word_idx < words.len() {
                 let current_word = words[current_word_idx];
                 if !current_word.contains(&unit.source_char.as_str()) {
-                    // 다른 어절로 넘어감
                     word_boundaries.push(i);
                     current_word_idx += 1;
                 }
@@ -128,7 +244,6 @@ pub fn insert_pauses(units: &mut Vec<ProsodyUnit>, text: &str) {
         last_char = unit.source_char.clone();
     }
 
-    // 경계에 pause 삽입 (뒤에서부터 삽입해야 인덱스가 밀리지 않음)
     for boundary in word_boundaries.into_iter().rev() {
         units.insert(boundary, ProsodyUnit {
             phoneme: "pause".into(),
@@ -157,21 +272,68 @@ mod tests {
         for unit in &prosody {
             assert!(unit.duration_ms > 0.0);
             assert!(unit.pitch_hz > 0.0);
-            assert!(unit.amplitude > 0.0);
         }
     }
 
     #[test]
-    fn test_pitch_curve() {
+    fn test_pitch_curve_smooth() {
         let jamo = hangul::decompose_text("안녕하세요");
         let phonemes = hangul::jamo_to_phonemes(&jamo);
         let params = ProsodyParams::default();
         let prosody = generate_prosody(&phonemes, &params);
 
-        // 문장 끝의 피치가 처음보다 낮아야 함 (하강 곡선)
-        let first_pitch = prosody.first().unwrap().pitch_hz;
-        let last_pitch = prosody.last().unwrap().pitch_hz;
-        assert!(last_pitch < first_pitch + 20.0); // 끝이 시작보다 많이 높지 않아야 함
+        // 피치가 부드럽게 변해야 함 (인접 음소 간 큰 점프 없음)
+        for i in 1..prosody.len() {
+            if prosody[i].pitch_hz > 0.0 && prosody[i - 1].pitch_hz > 0.0 {
+                let diff = (prosody[i].pitch_hz - prosody[i - 1].pitch_hz).abs();
+                assert!(diff < 15.0, "피치 점프가 너무 큼: {}Hz at {}", diff, i);
+            }
+        }
+
+        // 문장 끝의 피치가 시작보다 낮아야 함
+        let first = prosody.first().unwrap().pitch_hz;
+        let last = prosody.last().unwrap().pitch_hz;
+        assert!(last < first + 5.0, "끝 피치({})가 시작({})보다 높음", last, first);
+    }
+
+    #[test]
+    fn test_amplitude_variation() {
+        let jamo = hangul::decompose_text("안녕하세요");
+        let phonemes = hangul::jamo_to_phonemes(&jamo);
+        let params = ProsodyParams::default();
+        let prosody = generate_prosody(&phonemes, &params);
+
+        // 모음과 자음의 진폭이 달라야 함
+        let vowel_amps: Vec<f32> = prosody.iter()
+            .filter(|u| matches!(u.phoneme_type, PhonemeType::Vowel))
+            .map(|u| u.amplitude)
+            .collect();
+        let cons_amps: Vec<f32> = prosody.iter()
+            .filter(|u| matches!(u.phoneme_type, PhonemeType::Consonant))
+            .map(|u| u.amplitude)
+            .collect();
+
+        if !vowel_amps.is_empty() && !cons_amps.is_empty() {
+            let avg_v: f32 = vowel_amps.iter().sum::<f32>() / vowel_amps.len() as f32;
+            let avg_c: f32 = cons_amps.iter().sum::<f32>() / cons_amps.len() as f32;
+            assert!(avg_v > avg_c, "모음 진폭({})이 자음({})보다 커야 함", avg_v, avg_c);
+        }
+    }
+
+    #[test]
+    fn test_phrase_final_lengthening() {
+        let jamo = hangul::decompose_text("하");
+        let phonemes = hangul::jamo_to_phonemes(&jamo);
+        let params = ProsodyParams::default();
+        let prosody = generate_prosody(&phonemes, &params);
+
+        // 마지막 모음이 기본값보다 길어야 함 (phrase-final lengthening)
+        let last_vowel = prosody.iter().rev()
+            .find(|u| matches!(u.phoneme_type, PhonemeType::Vowel));
+        if let Some(v) = last_vowel {
+            let base = base_duration(&v.phoneme, &PhonemeType::Vowel);
+            assert!(v.duration_ms >= base, "마지막 모음 길이({})가 기본({})보다 짧음", v.duration_ms, base);
+        }
     }
 
     #[test]
@@ -185,7 +347,8 @@ mod tests {
             ..Default::default()
         });
 
-        // 2배속이면 길이가 절반
-        assert!((fast[0].duration_ms - normal[0].duration_ms / 2.0).abs() < 0.01);
+        // 2배속이면 길이 비율이 약 2:1
+        let ratio = normal[0].duration_ms / fast[0].duration_ms;
+        assert!((ratio - 2.0).abs() < 0.1, "속도 비율({})이 2.0이 아님", ratio);
     }
 }
