@@ -81,7 +81,12 @@
                     <button id="play-btn" disabled>재생</button>
                     <button id="ab-btn" onclick="toggleABCompare()" disabled style="display:none;">A/B 비교</button>
                 </div>
+                <div class="viz-tabs">
+                    <button class="viz-tab active" onclick="switchViz('waveform')">파형</button>
+                    <button class="viz-tab" onclick="switchViz('spectrogram')">스펙트로그램</button>
+                </div>
                 <canvas id="waveform-canvas" width="800" height="200"></canvas>
+                <canvas id="spectrogram-canvas" width="800" height="200" style="display:none;"></canvas>
             </div>
         </section>
     </main>

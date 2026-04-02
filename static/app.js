@@ -339,6 +339,7 @@ function setupAudioPlayback(base64Audio) {
 
     audioContext.decodeAudioData(bytes.buffer.slice(0)).then(buffer => {
         currentAudioBuffer = buffer;
+        lastAudioData = buffer.getChannelData(0);
         const playBtn = document.getElementById('play-btn');
         playBtn.disabled = false;
         playBtn.onclick = playAudio;
@@ -346,6 +347,12 @@ function setupAudioPlayback(base64Audio) {
     }).catch(err => {
         console.error('오디오 디코딩 실패:', err);
         // 폴백: WAV 데이터에서 직접 파형 그리기
+        const view = new DataView(bytes.buffer);
+        const numSamples = (bytes.length - 44) / 2;
+        lastAudioData = new Float32Array(numSamples);
+        for (let i = 0; i < numSamples; i++) {
+            lastAudioData[i] = view.getInt16(44 + i * 2, true) / 32768;
+        }
         drawWaveformFromBytes(bytes);
         const playBtn = document.getElementById('play-btn');
         playBtn.disabled = false;
@@ -527,12 +534,133 @@ function toggleABCompare() {
     }
 }
 
-// synthesize의 결과 저장을 위해 원래 renderResults를 래핑
-const _originalSetupAudio = setupAudioPlayback;
+// === 스펙트로그램 + 탭 전환 ===
+
+let lastAudioData = null; // Float32Array of decoded audio
+
+function switchViz(mode) {
+    const wfCanvas = document.getElementById('waveform-canvas');
+    const sgCanvas = document.getElementById('spectrogram-canvas');
+    document.querySelectorAll('.viz-tab').forEach(t => t.classList.remove('active'));
+
+    if (mode === 'spectrogram') {
+        wfCanvas.style.display = 'none';
+        sgCanvas.style.display = 'block';
+        document.querySelectorAll('.viz-tab')[1].classList.add('active');
+        if (lastAudioData) drawSpectrogram(lastAudioData);
+    } else {
+        wfCanvas.style.display = 'block';
+        sgCanvas.style.display = 'none';
+        document.querySelectorAll('.viz-tab')[0].classList.add('active');
+    }
+}
+
+function drawSpectrogram(audioData) {
+    const canvas = document.getElementById('spectrogram-canvas');
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+
+    ctx.fillStyle = '#0a0a1a';
+    ctx.fillRect(0, 0, w, h);
+
+    const fftSize = 512;
+    const halfFFT = fftSize / 2;
+    const hopSize = Math.max(1, Math.floor(audioData.length / w));
+    const numFrames = Math.min(w, Math.floor(audioData.length / hopSize));
+
+    // Hann 윈도우
+    const window = new Float32Array(fftSize);
+    for (let i = 0; i < fftSize; i++) {
+        window[i] = 0.5 * (1 - Math.cos(2 * Math.PI * i / (fftSize - 1)));
+    }
+
+    // 각 프레임의 스펙트럼 계산 (간이 DFT — 실수부만)
+    const magnitudes = [];
+    let maxMag = 0;
+
+    for (let frame = 0; frame < numFrames; frame++) {
+        const offset = frame * hopSize;
+        const spectrum = new Float32Array(halfFFT);
+
+        for (let k = 0; k < halfFFT; k++) {
+            let re = 0, im = 0;
+            for (let n = 0; n < fftSize; n++) {
+                const sample = (offset + n < audioData.length) ? audioData[offset + n] * window[n] : 0;
+                const angle = -2 * Math.PI * k * n / fftSize;
+                re += sample * Math.cos(angle);
+                im += sample * Math.sin(angle);
+            }
+            const mag = Math.sqrt(re * re + im * im);
+            spectrum[k] = mag;
+            if (mag > maxMag) maxMag = mag;
+        }
+        magnitudes.push(spectrum);
+    }
+
+    // 렌더링
+    if (maxMag === 0) maxMag = 1;
+    const imgData = ctx.createImageData(numFrames, h);
+
+    for (let x = 0; x < numFrames; x++) {
+        const spectrum = magnitudes[x];
+        for (let y = 0; y < h; y++) {
+            const freqBin = Math.floor((1 - y / h) * halfFFT);
+            const mag = spectrum[Math.min(freqBin, halfFFT - 1)] / maxMag;
+            // dB 스케일 + 컬러맵 (어두운 파랑 → 노랑 → 빨강)
+            const db = Math.max(0, 1 + Math.log10(mag + 0.001) / 3);
+            const idx = (y * numFrames + x) * 4;
+            if (db < 0.33) {
+                imgData.data[idx] = 0;
+                imgData.data[idx + 1] = Math.floor(db * 3 * 100);
+                imgData.data[idx + 2] = Math.floor(db * 3 * 180);
+            } else if (db < 0.66) {
+                const t = (db - 0.33) * 3;
+                imgData.data[idx] = Math.floor(t * 230);
+                imgData.data[idx + 1] = Math.floor(100 + t * 155);
+                imgData.data[idx + 2] = Math.floor(180 - t * 140);
+            } else {
+                const t = (db - 0.66) * 3;
+                imgData.data[idx] = Math.floor(230 + t * 25);
+                imgData.data[idx + 1] = Math.floor(255 - t * 100);
+                imgData.data[idx + 2] = Math.floor(40 - t * 40);
+            }
+            imgData.data[idx + 3] = 255;
+        }
+    }
+
+    // 스펙트로그램을 캔버스에 그리기 (스케일링)
+    const tmpCanvas = document.createElement('canvas');
+    tmpCanvas.width = numFrames;
+    tmpCanvas.height = h;
+    tmpCanvas.getContext('2d').putImageData(imgData, 0, 0);
+    ctx.drawImage(tmpCanvas, 0, 0, w, h);
+
+    // 주파수 축 라벨
+    ctx.fillStyle = '#666';
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'left';
+    const maxFreq = 44100 / 2;
+    for (let f = 0; f <= maxFreq; f += 2000) {
+        const y = h * (1 - f / maxFreq);
+        ctx.fillText(`${f / 1000}k`, 4, y + 4);
+    }
+
+    // 시간 축
+    const duration = audioData.length / 44100;
+    ctx.textAlign = 'center';
+    ctx.fillText(`${duration.toFixed(2)}s`, w / 2, h - 4);
+}
+
+// setupAudioPlayback에서 lastAudioData 저장 (기존 함수에 훅)
+const _origSetup = setupAudioPlayback;
 
 document.addEventListener('DOMContentLoaded', () => {
     loadPipeline();
-    // 저장된 프리셋이 있으면 로드 버튼 활성화
     if (localStorage.getItem('tts-custom-preset')) {
         document.getElementById('load-preset-btn').disabled = false;
     }

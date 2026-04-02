@@ -172,6 +172,27 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
     gap: 0.5rem;
 }
 
+.viz-tabs {
+    display: flex;
+    gap: 2px;
+    margin-bottom: 0.5rem;
+}
+
+.viz-tab {
+    padding: 0.3rem 0.8rem;
+    font-size: 0.8rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-bottom: none;
+    border-radius: 6px 6px 0 0;
+}
+
+.viz-tab.active {
+    background: var(--surface-alt);
+    border-color: var(--primary);
+    color: var(--primary);
+}
+
 /* Pipeline Section */
 .pipeline-container {
     display: flex;
