@@ -43,7 +43,6 @@ async function synthesize() {
     btn.disabled = true;
     btn.textContent = '처리 중...';
 
-    // 모든 stage를 active로 초기화
     document.querySelectorAll('.stage-box').forEach(b => {
         b.classList.remove('active', 'completed');
     });
@@ -57,10 +56,7 @@ async function synthesize() {
 
         const data = await res.json();
         renderResults(data);
-
-        // 애니메이션: 단계별로 순차 활성화
         animateStages(data.pipeline);
-
     } catch (e) {
         console.error('합성 실패:', e);
         alert('합성 요청에 실패했습니다.');
@@ -99,22 +95,81 @@ function renderResults(data) {
     data.pipeline.forEach(step => {
         const card = document.createElement('div');
         card.className = 'result-card';
-        card.innerHTML = `
-            <div class="result-label">${step.label}</div>
-            <div class="result-data">${JSON.stringify(step.data, null, 2)}</div>
-        `;
+
+        // 단계별 맞춤 렌더링
+        let content = '';
+        if (step.stage === 'JamoDecomposition' && step.data.jamo) {
+            content = renderJamoVisual(step.data.jamo);
+        } else if (step.stage === 'PhonemeConversion' && step.data.phonemes) {
+            content = renderPhonemeVisual(step.data.phonemes);
+        } else {
+            content = `<div class="result-data">${JSON.stringify(step.data, null, 2)}</div>`;
+        }
+
+        card.innerHTML = `<div class="result-label">${step.label}</div>${content}`;
         container.appendChild(card);
     });
 
-    // 오디오 섹션 표시 (Phase 4에서 활성화)
     const audioSection = document.getElementById('audio-section');
     if (data.audio_base64) {
         audioSection.style.display = 'block';
-        // Phase 4에서 구현
     } else {
         audioSection.style.display = 'block';
         drawEmptyWaveform();
     }
+}
+
+// 자모 분해 시각화: 각 글자를 초성/중성/종성으로 분리하여 표시
+function renderJamoVisual(jamoList) {
+    if (!jamoList || jamoList.length === 0) {
+        return '<div class="result-data">분해할 한글 문자가 없습니다.</div>';
+    }
+
+    let html = '<div class="jamo-visual">';
+    jamoList.forEach(j => {
+        html += `
+            <div class="jamo-card">
+                <div class="jamo-char">${j.character}</div>
+                <div class="jamo-parts">
+                    <span class="jamo-cho" title="초성">${j.choseong}</span>
+                    <span class="jamo-jung" title="중성">${j.jungseong}</span>
+                    <span class="jamo-jong" title="종성">${j.jongseong || '·'}</span>
+                </div>
+                <div class="jamo-labels">
+                    <span>초</span><span>중</span><span>종</span>
+                </div>
+            </div>
+        `;
+    });
+    html += '</div>';
+    return html;
+}
+
+// 음소 시각화: 음소 시퀀스를 색상으로 구분하여 표시
+function renderPhonemeVisual(phonemes) {
+    if (!phonemes || phonemes.length === 0) {
+        return '<div class="result-data">음소가 없습니다.</div>';
+    }
+
+    let html = '<div class="phoneme-visual">';
+    phonemes.forEach(p => {
+        const typeClass = p.phoneme_type === 'Consonant' ? 'ph-consonant'
+            : p.phoneme_type === 'Vowel' ? 'ph-vowel'
+            : 'ph-other';
+        html += `
+            <div class="phoneme-chip ${typeClass}" title="${p.source_char}">
+                <span class="ph-symbol">${p.symbol}</span>
+                <span class="ph-type">${p.phoneme_type === 'Consonant' ? '자음' : '모음'}</span>
+            </div>
+        `;
+    });
+    html += '</div>';
+
+    // 음소 시퀀스 텍스트
+    const sequence = phonemes.map(p => p.symbol).join(' ');
+    html += `<div class="phoneme-sequence">${sequence}</div>`;
+
+    return html;
 }
 
 function drawEmptyWaveform() {
@@ -130,7 +185,6 @@ function drawEmptyWaveform() {
     ctx.fillStyle = '#16213e';
     ctx.fillRect(0, 0, w, h);
 
-    // 중앙선
     ctx.strokeStyle = '#333';
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -138,12 +192,10 @@ function drawEmptyWaveform() {
     ctx.lineTo(w, h / 2);
     ctx.stroke();
 
-    // "Phase 4에서 파형이 표시됩니다" 텍스트
     ctx.fillStyle = '#999';
     ctx.font = '14px sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText('Phase 4에서 파형이 표시됩니다', w / 2, h / 2 - 10);
 }
 
-// 페이지 로드 시 파이프라인 정보 가져오기
 document.addEventListener('DOMContentLoaded', loadPipeline);

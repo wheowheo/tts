@@ -6,13 +6,38 @@ use axum::{
 };
 use tower_http::services::ServeDir;
 use tower_http::cors::CorsLayer;
-use tts_core::{PipelineInfo, PipelineResult, PipelineStage, SynthesizeRequest, SynthesizeResponse};
+use tts_core::{
+    PipelineInfo, PipelineResult, PipelineStage, SynthesizeRequest, SynthesizeResponse,
+    hangul,
+};
+
+#[derive(serde::Deserialize)]
+struct AnalyzeRequest {
+    text: String,
+}
 
 async fn get_pipeline() -> Json<PipelineInfo> {
     Json(PipelineInfo::default_pipeline())
 }
 
+async fn analyze(Json(req): Json<AnalyzeRequest>) -> Json<serde_json::Value> {
+    let normalized = hangul::normalize_text(&req.text);
+    let jamo = hangul::decompose_text(&normalized);
+    let phonemes = hangul::jamo_to_phonemes(&jamo);
+
+    Json(serde_json::json!({
+        "original": req.text,
+        "normalized": normalized,
+        "jamo": jamo,
+        "phonemes": phonemes,
+    }))
+}
+
 async fn synthesize(Json(req): Json<SynthesizeRequest>) -> Result<Json<SynthesizeResponse>, StatusCode> {
+    let normalized = hangul::normalize_text(&req.text);
+    let jamo = hangul::decompose_text(&normalized);
+    let phonemes = hangul::jamo_to_phonemes(&jamo);
+
     let pipeline = vec![
         PipelineResult {
             stage: PipelineStage::TextInput,
@@ -22,17 +47,17 @@ async fn synthesize(Json(req): Json<SynthesizeRequest>) -> Result<Json<Synthesiz
         PipelineResult {
             stage: PipelineStage::TextNormalization,
             label: "텍스트 정규화".into(),
-            data: serde_json::json!({ "normalized": &req.text, "note": "Phase 2에서 구현 예정" }),
+            data: serde_json::json!({ "normalized": &normalized }),
         },
         PipelineResult {
             stage: PipelineStage::JamoDecomposition,
             label: "자모 분해".into(),
-            data: serde_json::json!({ "jamo": [], "note": "Phase 2에서 구현 예정" }),
+            data: serde_json::json!({ "jamo": &jamo }),
         },
         PipelineResult {
             stage: PipelineStage::PhonemeConversion,
             label: "음소 변환".into(),
-            data: serde_json::json!({ "phonemes": [], "note": "Phase 2에서 구현 예정" }),
+            data: serde_json::json!({ "phonemes": &phonemes }),
         },
         PipelineResult {
             stage: PipelineStage::ProsodyGeneration,
@@ -64,6 +89,7 @@ async fn synthesize(Json(req): Json<SynthesizeRequest>) -> Result<Json<Synthesiz
 async fn main() {
     let api_routes = Router::new()
         .route("/pipeline", get(get_pipeline))
+        .route("/analyze", post(analyze))
         .route("/synthesize", post(synthesize));
 
     let app = Router::new()
