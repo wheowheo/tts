@@ -43,6 +43,27 @@ fn vowel_formants(phoneme: &str) -> FormantParams {
         "wi"  => FormantParams { f1: 350.0, f2: 2000.0, f3: 2800.0, bw1: 80.0, bw2: 90.0, bw3: 120.0 },
         "oe"  => FormantParams { f1: 450.0, f2: 1600.0, f3: 2600.0, bw1: 80.0, bw2: 90.0, bw3: 120.0 },
         "ui"  => FormantParams { f1: 350.0, f2: 1800.0, f3: 2700.0, bw1: 80.0, bw2: 90.0, bw3: 120.0 },
+        // 영어 모음
+        "iy"  => FormantParams { f1: 280.0, f2: 2250.0, f3: 2900.0, bw1: 80.0, bw2: 90.0, bw3: 120.0 },
+        "ih"  => FormantParams { f1: 400.0, f2: 1920.0, f3: 2560.0, bw1: 80.0, bw2: 90.0, bw3: 120.0 },
+        "eh"  => FormantParams { f1: 550.0, f2: 1770.0, f3: 2490.0, bw1: 80.0, bw2: 90.0, bw3: 120.0 },
+        "aa"  => FormantParams { f1: 710.0, f2: 1100.0, f3: 2540.0, bw1: 80.0, bw2: 90.0, bw3: 120.0 },
+        "ah"  => FormantParams { f1: 640.0, f2: 1200.0, f3: 2400.0, bw1: 80.0, bw2: 90.0, bw3: 120.0 },
+        "ao"  => FormantParams { f1: 570.0, f2: 840.0,  f3: 2410.0, bw1: 80.0, bw2: 90.0, bw3: 120.0 },
+        "uh"  => FormantParams { f1: 440.0, f2: 1020.0, f3: 2240.0, bw1: 80.0, bw2: 90.0, bw3: 120.0 },
+        "uw"  => FormantParams { f1: 300.0, f2: 870.0,  f3: 2240.0, bw1: 80.0, bw2: 90.0, bw3: 120.0 },
+        "er"  => FormantParams { f1: 490.0, f2: 1350.0, f3: 1690.0, bw1: 80.0, bw2: 90.0, bw3: 120.0 },
+        "ey"  => FormantParams { f1: 500.0, f2: 1700.0, f3: 2600.0, bw1: 80.0, bw2: 90.0, bw3: 120.0 },
+        "ai"  => FormantParams { f1: 700.0, f2: 1200.0, f3: 2600.0, bw1: 80.0, bw2: 90.0, bw3: 120.0 },
+        "aw"  => FormantParams { f1: 650.0, f2: 1100.0, f3: 2500.0, bw1: 80.0, bw2: 90.0, bw3: 120.0 },
+        "ow"  => FormantParams { f1: 500.0, f2: 900.0,  f3: 2500.0, bw1: 80.0, bw2: 90.0, bw3: 120.0 },
+        "oy"  => FormantParams { f1: 550.0, f2: 900.0,  f3: 2500.0, bw1: 80.0, bw2: 90.0, bw3: 120.0 },
+        // 복합 영어 모음 (하이픈 포함)
+        "ah-s"  => FormantParams { f1: 640.0, f2: 1200.0, f3: 2400.0, bw1: 80.0, bw2: 90.0, bw3: 120.0 },
+        "ih-ng" => FormantParams { f1: 400.0, f2: 1920.0, f3: 2560.0, bw1: 80.0, bw2: 90.0, bw3: 120.0 },
+        "aa-r"  => FormantParams { f1: 710.0, f2: 1100.0, f3: 2540.0, bw1: 80.0, bw2: 90.0, bw3: 120.0 },
+        "ao-r"  => FormantParams { f1: 570.0, f2: 840.0,  f3: 2410.0, bw1: 80.0, bw2: 90.0, bw3: 120.0 },
+        "ao-l"  => FormantParams { f1: 570.0, f2: 840.0,  f3: 2410.0, bw1: 80.0, bw2: 90.0, bw3: 120.0 },
         _ => FormantParams { f1: 500.0, f2: 1500.0, f3: 2600.0, bw1: 80.0, bw2: 90.0, bw3: 120.0 },
     }
 }
@@ -107,7 +128,7 @@ fn synthesize_consonant(phoneme: &str, duration_ms: f32, pitch_hz: f32, amplitud
 
     match phoneme {
         // 마찰음: 지속적인 노이즈
-        "s" | "ss" | "h" => {
+        "s" | "ss" | "h" | "hh" | "f" | "v" | "z" | "sh" | "sh-n" => {
             for i in 0..num_samples {
                 let env = envelope(i, num_samples, 0.1, 0.1);
                 samples.push(noise() * amp * env);
@@ -138,6 +159,31 @@ fn synthesize_consonant(phoneme: &str, duration_ms: f32, pitch_hz: f32, amplitud
                 phase += f0 / SAMPLE_RATE as f64;
             }
         }
+        // 반모음/글라이드
+        "w" | "y" | "kw" => {
+            let f0 = pitch_hz as f64;
+            let mut phase = 0.0;
+            let mut res = ResonatorState::new();
+            for i in 0..num_samples {
+                let env = envelope(i, num_samples, 0.15, 0.15);
+                let glottal = glottal_pulse(phase);
+                let out = res.process(glottal, 400.0, 100.0, SAMPLE_RATE as f64);
+                samples.push(out * amp * env * 2.0);
+                phase += f0 / SAMPLE_RATE as f64;
+            }
+        }
+        // 복합 자음 (k-s 등)
+        "k-s" => {
+            let half = num_samples / 2;
+            for i in 0..half {
+                let env = envelope(i, half, 0.05, 0.5);
+                samples.push(noise() * amp * env * 1.5);
+            }
+            for i in 0..(num_samples - half) {
+                let env = envelope(i, num_samples - half, 0.1, 0.1);
+                samples.push(noise() * amp * env);
+            }
+        }
         // 유음
         "r" | "l" => {
             let f0 = pitch_hz as f64;
@@ -152,7 +198,7 @@ fn synthesize_consonant(phoneme: &str, duration_ms: f32, pitch_hz: f32, amplitud
             }
         }
         // 파찰음
-        "ch" | "j" | "jj" => {
+        "ch" | "j" | "jj" | "jh" => {
             let burst_len = (num_samples as f64 * 0.4) as usize;
             for i in 0..num_samples {
                 if i < burst_len {

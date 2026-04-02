@@ -1,3 +1,4 @@
+pub mod english;
 pub mod hangul;
 pub mod prosody;
 pub mod synthesis;

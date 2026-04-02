@@ -8,7 +8,7 @@ use tower_http::services::ServeDir;
 use tower_http::cors::CorsLayer;
 use tts_core::{
     PipelineInfo, PipelineResult, PipelineStage, SynthesizeRequest, SynthesizeResponse,
-    hangul, prosody, synthesis,
+    english, hangul, prosody, synthesis,
 };
 
 #[derive(serde::Deserialize)]
@@ -59,12 +59,34 @@ async fn generate_prosody(Json(req): Json<ProsodyRequest>) -> Json<serde_json::V
 }
 
 async fn synthesize(Json(req): Json<SynthesizeRequest>) -> Result<Json<SynthesizeResponse>, StatusCode> {
-    let normalized = hangul::normalize_text(&req.text);
-    let jamo = hangul::decompose_text(&normalized);
-    let phonemes = hangul::jamo_to_phonemes(&jamo);
+    let lang = req.language.as_deref().unwrap_or("ko");
     let params = req.params.unwrap_or_default();
-    let mut prosody_units = prosody::generate_prosody(&phonemes, &params);
-    prosody::insert_pauses(&mut prosody_units, &normalized);
+
+    let (normalized, phonemes_data, jamo_data, prosody_units) = if lang == "en" {
+        let normalized = english::normalize_english(&req.text);
+        let en_phonemes = english::english_g2p(&normalized);
+        let common_phonemes = english::to_common_phonemes(&en_phonemes);
+        let mut prosody_units = prosody::generate_prosody(&common_phonemes, &params);
+        prosody::insert_pauses(&mut prosody_units, &normalized);
+        (
+            normalized,
+            serde_json::json!({ "phonemes": &en_phonemes }),
+            serde_json::json!({ "note": "영어는 자모 분해를 사용하지 않습니다 (G2P 변환)" }),
+            prosody_units,
+        )
+    } else {
+        let normalized = hangul::normalize_text(&req.text);
+        let jamo = hangul::decompose_text(&normalized);
+        let phonemes = hangul::jamo_to_phonemes(&jamo);
+        let mut prosody_units = prosody::generate_prosody(&phonemes, &params);
+        prosody::insert_pauses(&mut prosody_units, &normalized);
+        (
+            normalized,
+            serde_json::json!({ "phonemes": &phonemes }),
+            serde_json::json!({ "jamo": &jamo }),
+            prosody_units,
+        )
+    };
 
     let total_duration: f32 = prosody_units.iter().map(|u| u.duration_ms).sum();
 
@@ -77,7 +99,7 @@ async fn synthesize(Json(req): Json<SynthesizeRequest>) -> Result<Json<Synthesiz
         PipelineResult {
             stage: PipelineStage::TextInput,
             label: "텍스트 입력".into(),
-            data: serde_json::json!({ "text": &req.text }),
+            data: serde_json::json!({ "text": &req.text, "language": lang }),
         },
         PipelineResult {
             stage: PipelineStage::TextNormalization,
@@ -86,13 +108,13 @@ async fn synthesize(Json(req): Json<SynthesizeRequest>) -> Result<Json<Synthesiz
         },
         PipelineResult {
             stage: PipelineStage::JamoDecomposition,
-            label: "자모 분해".into(),
-            data: serde_json::json!({ "jamo": &jamo }),
+            label: if lang == "en" { "G2P 변환".into() } else { "자모 분해".into() },
+            data: jamo_data,
         },
         PipelineResult {
             stage: PipelineStage::PhonemeConversion,
             label: "음소 변환".into(),
-            data: serde_json::json!({ "phonemes": &phonemes }),
+            data: phonemes_data,
         },
         PipelineResult {
             stage: PipelineStage::ProsodyGeneration,
