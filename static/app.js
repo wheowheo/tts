@@ -96,12 +96,13 @@ function renderResults(data) {
         const card = document.createElement('div');
         card.className = 'result-card';
 
-        // 단계별 맞춤 렌더링
         let content = '';
         if (step.stage === 'JamoDecomposition' && step.data.jamo) {
             content = renderJamoVisual(step.data.jamo);
         } else if (step.stage === 'PhonemeConversion' && step.data.phonemes) {
             content = renderPhonemeVisual(step.data.phonemes);
+        } else if (step.stage === 'ProsodyGeneration' && step.data.prosody) {
+            content = renderProsodyVisual(step.data);
         } else {
             content = `<div class="result-data">${JSON.stringify(step.data, null, 2)}</div>`;
         }
@@ -119,7 +120,7 @@ function renderResults(data) {
     }
 }
 
-// 자모 분해 시각화: 각 글자를 초성/중성/종성으로 분리하여 표시
+// 자모 분해 시각화
 function renderJamoVisual(jamoList) {
     if (!jamoList || jamoList.length === 0) {
         return '<div class="result-data">분해할 한글 문자가 없습니다.</div>';
@@ -145,7 +146,7 @@ function renderJamoVisual(jamoList) {
     return html;
 }
 
-// 음소 시각화: 음소 시퀀스를 색상으로 구분하여 표시
+// 음소 시각화
 function renderPhonemeVisual(phonemes) {
     if (!phonemes || phonemes.length === 0) {
         return '<div class="result-data">음소가 없습니다.</div>';
@@ -165,11 +166,123 @@ function renderPhonemeVisual(phonemes) {
     });
     html += '</div>';
 
-    // 음소 시퀀스 텍스트
     const sequence = phonemes.map(p => p.symbol).join(' ');
     html += `<div class="phoneme-sequence">${sequence}</div>`;
+    return html;
+}
+
+// 운율 시각화: 피치 곡선 + 음소별 길이 바 차트
+function renderProsodyVisual(prosodyData) {
+    const units = prosodyData.prosody;
+    if (!units || units.length === 0) {
+        return '<div class="result-data">운율 데이터가 없습니다.</div>';
+    }
+
+    const totalDuration = prosodyData.total_duration_ms || 0;
+
+    let html = '';
+
+    // 요약 정보
+    html += `<div class="prosody-info">총 길이: ${totalDuration.toFixed(0)}ms | 기본 피치: ${prosodyData.params?.base_pitch_hz || 150}Hz | 속도: ${prosodyData.params?.speed_factor || 1.0}x</div>`;
+
+    // 피치 곡선 캔버스
+    html += '<div class="prosody-chart-label">피치 곡선 (Hz)</div>';
+    html += '<canvas id="pitch-canvas" class="prosody-canvas" width="800" height="120"></canvas>';
+
+    // 음소별 길이 바 차트
+    html += '<div class="prosody-chart-label">음소별 길이 (ms)</div>';
+    html += '<div class="duration-bars">';
+    units.forEach(u => {
+        const maxDur = 200;
+        const pct = Math.min(u.duration_ms / maxDur * 100, 100);
+        const color = u.phoneme_type === 'Vowel' ? '#4ade80'
+            : u.phoneme_type === 'Consonant' ? '#60a5fa'
+            : '#fbbf24';
+        html += `
+            <div class="dur-bar-item">
+                <span class="dur-label">${u.phoneme}</span>
+                <div class="dur-bar-track">
+                    <div class="dur-bar-fill" style="width:${pct}%;background:${color}"></div>
+                </div>
+                <span class="dur-value">${u.duration_ms.toFixed(0)}</span>
+            </div>
+        `;
+    });
+    html += '</div>';
+
+    // 피치 캔버스는 DOM에 추가된 후 그려야 하므로 setTimeout 사용
+    setTimeout(() => drawPitchCurve(units), 50);
 
     return html;
+}
+
+function drawPitchCurve(units) {
+    const canvas = document.getElementById('pitch-canvas');
+    if (!canvas) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+
+    ctx.fillStyle = '#16213e';
+    ctx.fillRect(0, 0, w, h);
+
+    // 피치 값이 있는 유닛만 필터
+    const pitched = units.filter(u => u.pitch_hz > 0);
+    if (pitched.length === 0) return;
+
+    const pitches = pitched.map(u => u.pitch_hz);
+    const minP = Math.min(...pitches) - 10;
+    const maxP = Math.max(...pitches) + 10;
+    const rangeP = maxP - minP || 1;
+
+    // 그리드
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 0.5;
+    for (let i = 0; i <= 4; i++) {
+        const y = h * 0.1 + (h * 0.8) * (i / 4);
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(w, y);
+        ctx.stroke();
+        const val = maxP - (rangeP * i / 4);
+        ctx.fillStyle = '#666';
+        ctx.font = '10px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText(`${val.toFixed(0)}`, 4, y - 3);
+    }
+
+    // 피치 곡선
+    ctx.strokeStyle = '#e94560';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    pitched.forEach((u, i) => {
+        const x = (i / (pitched.length - 1 || 1)) * (w - 40) + 20;
+        const y = h * 0.1 + (1 - (u.pitch_hz - minP) / rangeP) * (h * 0.8);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    // 포인트 + 레이블
+    pitched.forEach((u, i) => {
+        const x = (i / (pitched.length - 1 || 1)) * (w - 40) + 20;
+        const y = h * 0.1 + (1 - (u.pitch_hz - minP) / rangeP) * (h * 0.8);
+
+        ctx.fillStyle = '#e94560';
+        ctx.beginPath();
+        ctx.arc(x, y, 3, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#ccc';
+        ctx.font = '9px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(u.phoneme, x, h - 4);
+    });
 }
 
 function drawEmptyWaveform() {
