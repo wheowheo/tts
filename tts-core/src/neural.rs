@@ -1,5 +1,5 @@
 /// 신경망 TTS 엔진 모듈
-/// Coqui TTS (VITS) — 한국어/영어 사전학습 모델 + 커스텀 학습
+/// 한국어: XTTS v2 (GPU, multilingual) / 영어: VITS ljspeech (GPU)
 
 use std::process::{Command, Stdio};
 use std::path::{Path, PathBuf};
@@ -19,30 +19,59 @@ fn tts_available() -> bool {
     tts_bin().exists()
 }
 
+/// 기본 참조 음성 경로 (XTTS v2 speaker cloning용)
+fn default_speaker_wav() -> PathBuf {
+    PathBuf::from("assets/default_speaker.wav")
+}
+
 /// 사전학습 모델로 합성
 pub fn synthesize(text: &str, language: &str) -> Result<NeuralAudio, String> {
     if !tts_available() {
         return Err("Coqui TTS가 설치되어 있지 않습니다. setup_neural.sh를 실행하세요.".into());
     }
 
-    let model_name = match language {
-        "ko" => "tts_models/kor/fairseq/vits",
-        "en" => "tts_models/en/ljspeech/vits",
-        _ => "tts_models/kor/fairseq/vits",
-    };
-
     let tmp = std::env::temp_dir().join("tts_neural_output.wav");
 
-    let output = Command::new(tts_bin())
-        .args([
-            "--text", text,
-            "--model_name", model_name,
-            "--out_path", tmp.to_str().unwrap(),
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|e| format!("tts 실행 실패: {}", e))?;
+    let output = match language {
+        "en" => {
+            // 영어: VITS ljspeech — 단일화자 GPU 모델
+            Command::new(tts_bin())
+                .args([
+                    "--text", text,
+                    "--model_name", "tts_models/en/ljspeech/vits",
+                    "--out_path", tmp.to_str().unwrap(),
+                    "--use_cuda",
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .map_err(|e| format!("tts 실행 실패: {}", e))?
+        }
+        _ => {
+            // 한국어: XTTS v2 — GPU 지원 멀티링구얼 모델
+            let speaker_wav = default_speaker_wav();
+            if !speaker_wav.exists() {
+                return Err(format!(
+                    "참조 음성 파일이 없습니다: {} (assets/default_speaker.wav 필요)",
+                    speaker_wav.display()
+                ));
+            }
+            Command::new(tts_bin())
+                .env("COQUI_TOS_AGREED", "1")
+                .args([
+                    "--text", text,
+                    "--model_name", "tts_models/multilingual/multi-dataset/xtts_v2",
+                    "--speaker_wav", speaker_wav.to_str().unwrap(),
+                    "--language_idx", "ko",
+                    "--out_path", tmp.to_str().unwrap(),
+                    "--use_cuda",
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .map_err(|e| format!("tts 실행 실패: {}", e))?
+        }
+    };
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -56,10 +85,15 @@ pub fn synthesize(text: &str, language: &str) -> Result<NeuralAudio, String> {
         return Err("합성 출력이 비어있습니다.".into());
     }
 
+    let engine = match language {
+        "en" => "coqui-vits-en".to_string(),
+        _ => "coqui-xtts_v2-ko".to_string(),
+    };
+
     Ok(NeuralAudio {
         wav_data: wav,
-        sample_rate: 22050,
-        engine: format!("coqui-vits-{}", language),
+        sample_rate: 24000,
+        engine,
     })
 }
 
@@ -77,6 +111,7 @@ pub fn synthesize_custom(text: &str, model_path: &str, config_path: &str) -> Res
             "--model_path", model_path,
             "--config_path", config_path,
             "--out_path", tmp.to_str().unwrap(),
+            "--use_cuda",
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -171,15 +206,17 @@ pub fn check_engines() -> serde_json::Value {
             .unwrap_or_default()
     } else { vec![] };
 
+    let speaker_wav_ok = default_speaker_wav().exists();
     serde_json::json!({
         "coqui_tts_installed": coqui_ok,
-        "korean_ready": coqui_ok,
+        "korean_ready": coqui_ok && speaker_wav_ok,
         "english_ready": coqui_ok,
-        "type": "coqui-vits",
+        "type": "coqui-xtts_v2+vits",
         "pretrained_models": {
-            "ko": "tts_models/kor/fairseq/vits",
+            "ko": "tts_models/multilingual/multi-dataset/xtts_v2",
             "en": "tts_models/en/ljspeech/vits"
         },
+        "speaker_wav": speaker_wav_ok,
         "custom_models": custom_models,
         "install_guide": if coqui_ok { "설치 완료" } else { "bash setup_neural.sh" },
         "training": {
