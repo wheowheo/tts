@@ -157,133 +157,218 @@ impl ResonatorState {
     }
 }
 
-/// 자음 합성: 노이즈 기반
+/// 유성 자음 합성 공통 헬퍼 (LF 글로탈 + 지터/시머 + 공명)
+fn voiced_consonant(num_samples: usize, pitch_hz: f32, amplitude: f32,
+                    res_freq: f64, res_bw: f64, seed: u32,
+                    attack: f64, release: f64) -> Vec<f64> {
+    let f0 = pitch_hz as f64;
+    let amp = amplitude as f64 * 0.3;
+    let mut samples = Vec::with_capacity(num_samples);
+    let mut phase: f64 = 0.0;
+    let mut rng = Rng::new(seed);
+    let mut prev_phase = 0.0_f64;
+    let mut jitter_val = 0.0_f64;
+    let mut shimmer_val = 0.0_f64;
+    let mut res = ResonatorState::new();
+    let mut tilt = LowPassState::new(0.35);
+    for i in 0..num_samples {
+        let env = envelope(i, num_samples, attack, release);
+        if phase.floor() > prev_phase.floor() {
+            jitter_val = rng.next_f64() * 0.015;
+            shimmer_val = rng.next_f64() * 0.03;
+        }
+        prev_phase = phase;
+        let glottal = glottal_pulse_lf(phase) * (1.0 + shimmer_val);
+        let tilted = tilt.process(glottal);
+        let out = res.process(tilted, res_freq, res_bw, SAMPLE_RATE as f64);
+        samples.push(out * amp * env * 2.0);
+        phase += (f0 * (1.0 + jitter_val)) / SAMPLE_RATE as f64;
+    }
+    samples
+}
+
+/// 마찰음 스펙트럼 파라미터 (중심 주파수, 대역폭)
+fn fricative_band(phoneme: &str) -> (f64, f64) {
+    match phoneme {
+        "s" | "ss"      => (5500.0, 3000.0), // ㅅ: 고주파 치찰음
+        "sh" | "sh-n"   => (3500.0, 2500.0), // sh: 중고주파
+        "h" | "hh"      => (1500.0, 2000.0), // ㅎ: 넓은 저주파
+        "f"             => (2000.0, 2500.0), // f: 순치 마찰음
+        "v"             => (1500.0, 2000.0), // v: 유성 순치
+        "z"             => (4500.0, 2500.0), // z: 유성 치찰음
+        _               => (3000.0, 2500.0),
+    }
+}
+
+/// 파열음 VOT(Voice Onset Time) ms
+fn plosive_vot_ms(phoneme: &str) -> f64 {
+    match phoneme {
+        // 한국어 평음: 중간 VOT
+        "k" | "t" | "p" | "g" | "d" | "b" => 30.0,
+        // 한국어 격음: 긴 VOT + 기식
+        "kh" | "th" | "ph"                 => 70.0,
+        // 한국어 경음: 짧은 VOT + 긴장
+        "kk" | "tt" | "pp"                 => 15.0,
+        _                                   => 30.0,
+    }
+}
+
+/// 비음 공명 주파수
+fn nasal_resonance(phoneme: &str) -> (f64, f64) {
+    match phoneme {
+        "m"  => (150.0, 120.0), // 양순: 낮은 공명
+        "n"  => (250.0, 100.0), // 치경: 중간
+        "ng" => (200.0, 110.0), // 연구개: 중간 낮음
+        _    => (250.0, 100.0),
+    }
+}
+
+/// 자음 합성 (스펙트럼 차별화 + VOT + 개별 공명)
 fn synthesize_consonant(phoneme: &str, duration_ms: f32, pitch_hz: f32, amplitude: f32) -> Vec<f64> {
     let num_samples = (duration_ms as f64 / 1000.0 * SAMPLE_RATE as f64) as usize;
     let mut samples = Vec::with_capacity(num_samples);
-    let mut rng_state: u32 = 12345;
-
-    // 간단한 PRNG (xorshift)
-    let mut noise = || -> f64 {
-        rng_state ^= rng_state << 13;
-        rng_state ^= rng_state >> 17;
-        rng_state ^= rng_state << 5;
-        (rng_state as f64 / u32::MAX as f64) * 2.0 - 1.0
-    };
-
+    let mut rng = Rng::new(12345);
     let amp = amplitude as f64 * 0.3;
 
     match phoneme {
-        // 마찰음: 지속적인 노이즈
+        // 마찰음: 밴드패스 필터된 노이즈 (각 마찰음마다 다른 스펙트럼)
         "s" | "ss" | "h" | "hh" | "f" | "v" | "z" | "sh" | "sh-n" => {
+            let (center, bw) = fricative_band(phoneme);
+            let mut bp = ResonatorState::new();
+            let gain = match phoneme {
+                "ss" => 1.3, // 경음은 더 강함
+                "h" | "hh" => 0.7, // ㅎ은 부드러움
+                _ => 1.0,
+            };
             for i in 0..num_samples {
-                let env = envelope(i, num_samples, 0.1, 0.1);
-                samples.push(noise() * amp * env);
+                let env = envelope(i, num_samples, 0.08, 0.12);
+                let noise = rng.next_f64();
+                let filtered = bp.process(noise, center, bw, SAMPLE_RATE as f64);
+                samples.push(filtered * amp * env * gain);
             }
         }
-        // 파열음: 짧은 버스트 + 무음
+        // 파열음: VOT 차별화 (평음/격음/경음)
         "k" | "kk" | "kh" | "g" | "t" | "tt" | "th" | "d" | "p" | "pp" | "ph" | "b" => {
-            let burst_len = (num_samples as f64 * 0.3) as usize;
+            let vot = plosive_vot_ms(phoneme);
+            let vot_samples = (vot / 1000.0 * SAMPLE_RATE as f64) as usize;
+            let burst_samples = (5.0 / 1000.0 * SAMPLE_RATE as f64) as usize; // 5ms 버스트
+            let is_aspirated = matches!(phoneme, "kh" | "th" | "ph");
+            let is_tense = matches!(phoneme, "kk" | "tt" | "pp");
+
+            let mut bp = ResonatorState::new();
+            let burst_freq = match phoneme {
+                "k" | "kk" | "kh" | "g" => 1500.0,  // 연구개
+                "t" | "tt" | "th" | "d" => 3000.0,  // 치경
+                "p" | "pp" | "ph" | "b" => 800.0,   // 양순
+                _ => 2000.0,
+            };
+
             for i in 0..num_samples {
-                if i < burst_len {
-                    let env = envelope(i, burst_len, 0.05, 0.5);
-                    samples.push(noise() * amp * env * 1.5);
+                if i < burst_samples {
+                    // 버스트: 짧고 강한 노이즈
+                    let env = envelope(i, burst_samples, 0.1, 0.6);
+                    let noise = rng.next_f64();
+                    let filtered = bp.process(noise, burst_freq, 800.0, SAMPLE_RATE as f64);
+                    samples.push(filtered * amp * env * 2.0 * if is_tense { 1.5 } else { 1.0 });
+                } else if i < burst_samples + vot_samples {
+                    // VOT 구간: 격음은 기식 노이즈, 경음은 무음, 평음은 약한 기류
+                    if is_aspirated {
+                        let env = envelope(i - burst_samples, vot_samples, 0.2, 0.3);
+                        let noise = rng.next_f64();
+                        let filtered = bp.process(noise, 2000.0, 2000.0, SAMPLE_RATE as f64);
+                        samples.push(filtered * amp * env * 0.6);
+                    } else if is_tense {
+                        samples.push(0.0); // 경음: 짧은 무음
+                    } else {
+                        let env = envelope(i - burst_samples, vot_samples, 0.3, 0.3);
+                        samples.push(rng.next_f64() * amp * env * 0.15);
+                    }
                 } else {
                     samples.push(0.0);
                 }
             }
         }
-        // 비음: 성대 진동 + 비강 공명 (LF 글로탈 + 지터/시머)
+        // 비음: 개별 공명 주파수 + 반공명
         "n" | "m" | "ng" => {
+            let (res_freq, res_bw) = nasal_resonance(phoneme);
+            // 반공명(anti-resonance) 시뮬레이션: 두 번째 공진기를 역위상으로
+            let anti_freq = match phoneme {
+                "m" => 1000.0,
+                "n" => 1500.0,
+                "ng" => 2000.0,
+                _ => 1500.0,
+            };
             let f0 = pitch_hz as f64;
             let mut phase: f64 = 0.0;
-            let mut rng = Rng::new(7919);
+            let mut vrng = Rng::new(7919);
             let mut prev_phase = 0.0_f64;
             let mut jitter_val = 0.0_f64;
             let mut shimmer_val = 0.0_f64;
             let mut res = ResonatorState::new();
+            let mut anti_res = ResonatorState::new();
             let mut tilt = LowPassState::new(0.35);
             for i in 0..num_samples {
                 let env = envelope(i, num_samples, 0.1, 0.1);
                 if phase.floor() > prev_phase.floor() {
-                    jitter_val = rng.next_f64() * 0.015;
-                    shimmer_val = rng.next_f64() * 0.03;
+                    jitter_val = vrng.next_f64() * 0.015;
+                    shimmer_val = vrng.next_f64() * 0.03;
                 }
                 prev_phase = phase;
                 let glottal = glottal_pulse_lf(phase) * (1.0 + shimmer_val);
                 let tilted = tilt.process(glottal);
-                let nasal = res.process(tilted, 250.0, 100.0, SAMPLE_RATE as f64);
-                samples.push(nasal * amp * env * 2.0);
+                let nasal = res.process(tilted, res_freq, res_bw, SAMPLE_RATE as f64);
+                let anti = anti_res.process(tilted, anti_freq, 200.0, SAMPLE_RATE as f64);
+                samples.push((nasal * 1.5 - anti * 0.3) * amp * env * 2.0);
                 phase += (f0 * (1.0 + jitter_val)) / SAMPLE_RATE as f64;
             }
         }
-        // 반모음/글라이드 (LF 글로탈)
-        "w" | "y" | "kw" => {
-            let f0 = pitch_hz as f64;
-            let mut phase: f64 = 0.0;
-            let mut rng = Rng::new(6151);
-            let mut prev_phase = 0.0_f64;
-            let mut jitter_val = 0.0_f64;
-            let mut shimmer_val = 0.0_f64;
-            let mut res = ResonatorState::new();
-            let mut tilt = LowPassState::new(0.35);
-            for i in 0..num_samples {
-                let env = envelope(i, num_samples, 0.15, 0.15);
-                if phase.floor() > prev_phase.floor() {
-                    jitter_val = rng.next_f64() * 0.012;
-                    shimmer_val = rng.next_f64() * 0.025;
-                }
-                prev_phase = phase;
-                let glottal = glottal_pulse_lf(phase) * (1.0 + shimmer_val);
-                let tilted = tilt.process(glottal);
-                let out = res.process(tilted, 400.0, 100.0, SAMPLE_RATE as f64);
-                samples.push(out * amp * env * 2.0);
-                phase += (f0 * (1.0 + jitter_val)) / SAMPLE_RATE as f64;
-            }
+        // 반모음/글라이드: 포먼트 전이 시뮬레이션
+        "w" => {
+            return voiced_consonant(num_samples, pitch_hz, amplitude, 350.0, 100.0, 6151, 0.15, 0.15);
+        }
+        "y" => {
+            return voiced_consonant(num_samples, pitch_hz, amplitude, 1800.0, 150.0, 6151, 0.15, 0.15);
+        }
+        "kw" => {
+            return voiced_consonant(num_samples, pitch_hz, amplitude, 400.0, 120.0, 6151, 0.15, 0.15);
         }
         // 복합 자음 (k-s 등)
         "k-s" => {
             let half = num_samples / 2;
+            let mut bp = ResonatorState::new();
             for i in 0..half {
                 let env = envelope(i, half, 0.05, 0.5);
-                samples.push(noise() * amp * env * 1.5);
+                let filtered = bp.process(rng.next_f64(), 1500.0, 800.0, SAMPLE_RATE as f64);
+                samples.push(filtered * amp * env * 1.5);
             }
+            let mut bp2 = ResonatorState::new();
             for i in 0..(num_samples - half) {
                 let env = envelope(i, num_samples - half, 0.1, 0.1);
-                samples.push(noise() * amp * env);
+                let filtered = bp2.process(rng.next_f64(), 5500.0, 3000.0, SAMPLE_RATE as f64);
+                samples.push(filtered * amp * env);
             }
         }
-        // 유음 (LF 글로탈)
-        "r" | "l" => {
-            let f0 = pitch_hz as f64;
-            let mut phase: f64 = 0.0;
-            let mut rng = Rng::new(3571);
-            let mut prev_phase = 0.0_f64;
-            let mut jitter_val = 0.0_f64;
-            let mut shimmer_val = 0.0_f64;
-            let mut res = ResonatorState::new();
-            let mut tilt = LowPassState::new(0.35);
-            for i in 0..num_samples {
-                let env = envelope(i, num_samples, 0.15, 0.15);
-                if phase.floor() > prev_phase.floor() {
-                    jitter_val = rng.next_f64() * 0.015;
-                    shimmer_val = rng.next_f64() * 0.03;
-                }
-                prev_phase = phase;
-                let glottal = glottal_pulse_lf(phase) * (1.0 + shimmer_val);
-                let tilted = tilt.process(glottal);
-                let lateral = res.process(tilted, 350.0, 80.0, SAMPLE_RATE as f64);
-                samples.push(lateral * amp * env * 2.0);
-                phase += (f0 * (1.0 + jitter_val)) / SAMPLE_RATE as f64;
-            }
+        // 유음
+        "r" => {
+            return voiced_consonant(num_samples, pitch_hz, amplitude, 350.0, 80.0, 3571, 0.2, 0.2);
         }
-        // 파찰음
+        "l" => {
+            return voiced_consonant(num_samples, pitch_hz, amplitude, 400.0, 90.0, 3571, 0.15, 0.15);
+        }
+        // 파찰음: 버스트 + 마찰 노이즈
         "ch" | "j" | "jj" | "jh" => {
-            let burst_len = (num_samples as f64 * 0.4) as usize;
+            let burst_len = (num_samples as f64 * 0.15) as usize;
+            let fric_len = (num_samples as f64 * 0.35) as usize;
+            let mut bp = ResonatorState::new();
             for i in 0..num_samples {
                 if i < burst_len {
-                    let env = envelope(i, burst_len, 0.1, 0.3);
-                    samples.push(noise() * amp * env);
+                    let env = envelope(i, burst_len, 0.1, 0.4);
+                    let filtered = bp.process(rng.next_f64(), 3000.0, 1000.0, SAMPLE_RATE as f64);
+                    samples.push(filtered * amp * env * 1.5);
+                } else if i < burst_len + fric_len {
+                    let env = envelope(i - burst_len, fric_len, 0.2, 0.3);
+                    let filtered = bp.process(rng.next_f64(), 3500.0, 2500.0, SAMPLE_RATE as f64);
+                    samples.push(filtered * amp * env);
                 } else {
                     samples.push(0.0);
                 }
