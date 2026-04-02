@@ -194,8 +194,24 @@ pub fn generate_prosody(phonemes: &[Phoneme], params: &ProsodyParams) -> Vec<Pro
             let ctx_dur = contextual_duration(base_dur, i, total, &p.phoneme_type, phonemes);
             let duration = ctx_dur / params.speed_factor;
 
-            // 연속 피치 곡선에서 가져옴
-            let pitch = pitch_contour[i];
+            // 연속 피치 곡선 + 한국어 F0 섭동
+            // 경음/격음 뒤 모음은 높은 F0, 평음 뒤 모음은 낮은 F0
+            let mut pitch = pitch_contour[i];
+            if matches!(p.phoneme_type, PhonemeType::Vowel) && i > 0 {
+                let prev = &phonemes[i - 1].symbol;
+                match prev.as_str() {
+                    // 경음/격음 → 다음 모음 F0 상승
+                    "kk" | "tt" | "pp" | "ss" | "jj"
+                    | "kh" | "th" | "ph" | "ch" => {
+                        pitch *= 1.08; // +8%
+                    }
+                    // 평음 → 다음 모음 F0 하강
+                    "k" | "t" | "p" | "g" | "d" | "b" | "j" => {
+                        pitch *= 0.95; // -5%
+                    }
+                    _ => {}
+                }
+            }
 
             // 진폭: 타입별 자연 계수 × 위치 기반 감쇠
             let type_amp = natural_amplitude(&p.phoneme_type, &p.symbol);

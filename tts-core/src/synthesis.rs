@@ -109,8 +109,9 @@ fn glottal_pulse_lf(phase: f64) -> f64 {
 }
 
 /// 기식성(aspiration) 노이즈 혼합용 — 자연 음성에는 항상 약간의 기류 노이즈 존재
+#[allow(dead_code)]
 fn aspiration_noise(rng: &mut Rng) -> f64 {
-    rng.next_f64() * 0.03 // 3% 기식 노이즈
+    rng.next_f64() * 0.03
 }
 
 /// 1차 로우패스 필터 상태 — 스펙트럼 기울기(spectral tilt) 적용용
@@ -148,7 +149,9 @@ impl ResonatorState {
         let theta = PI2 * freq / sample_rate;
         let a1 = -2.0 * r * theta.cos();
         let a2 = r * r;
-        let gain = 1.0 - r;
+        // Klatt 공진기: 게인 = (1 - r²) 로 주파수 응답 정규화
+        // (1-r)보다 (1-r²) = (1-r)(1+r) 가 더 정확한 피크 정규화
+        let gain = 1.0 - r * r;
 
         let output = gain * input - a1 * self.y1 - a2 * self.y2;
         self.y2 = self.y1;
@@ -414,7 +417,7 @@ fn transition_bandwidth(base: &FormantParams) -> FormantParams {
     }
 }
 
-/// 모음 합성: 포먼트 합성 (LF 글로탈 + 지터/시머 + 스펙트럼 기울기 + 포먼트 전이)
+/// Klatt 스타일 모음 합성: 캐스케이드 F1→F2→F3→F4→F5 + 방사 특성 + 기식
 fn synthesize_vowel_with_context(
     phoneme: &str,
     duration_ms: f32,
@@ -424,78 +427,106 @@ fn synthesize_vowel_with_context(
     next_formants: Option<&FormantParams>,
 ) -> Vec<f64> {
     let num_samples = (duration_ms as f64 / 1000.0 * SAMPLE_RATE as f64) as usize;
-    let target_formants = vowel_formants(phoneme);
+    let target = vowel_formants(phoneme);
     let f0 = pitch_hz as f64;
     let amp = amplitude as f64;
 
-    // 전이 구간 길이 (샘플 수)
-    let onset_ms = if prev_formants.is_some() { 30.0 } else { 0.0 };  // 시작 전이
-    let offset_ms = if next_formants.is_some() { 25.0 } else { 0.0 }; // 끝 전이
-    let onset_samples = (onset_ms / 1000.0 * SAMPLE_RATE as f64) as usize;
-    let offset_samples = (offset_ms / 1000.0 * SAMPLE_RATE as f64) as usize;
-    let onset_end = onset_samples.min(num_samples / 3); // 최대 1/3까지
-    let offset_start = num_samples.saturating_sub(offset_samples.min(num_samples / 3));
+    // 전이 구간
+    let onset_end = if prev_formants.is_some() {
+        ((30.0 / 1000.0 * SAMPLE_RATE as f64) as usize).min(num_samples / 3)
+    } else { 0 };
+    let offset_start = if next_formants.is_some() {
+        num_samples.saturating_sub(((25.0 / 1000.0 * SAMPLE_RATE as f64) as usize).min(num_samples / 3))
+    } else { num_samples };
 
     let mut samples = Vec::with_capacity(num_samples);
     let mut phase: f64 = 0.0;
     let mut rng = Rng::new(phoneme.as_bytes().iter().fold(42u32, |a, &b| a.wrapping_mul(31).wrapping_add(b as u32)));
+
+    // Klatt 캐스케이드: F1→F2→F3→F4→F5 (직렬 연결)
     let mut res1 = ResonatorState::new();
     let mut res2 = ResonatorState::new();
     let mut res3 = ResonatorState::new();
-    let mut tilt = LowPassState::new(0.35);
+    let mut res4 = ResonatorState::new(); // F4: 3300Hz (고정)
+    let mut res5 = ResonatorState::new(); // F5: 4500Hz (고정)
+
+    // Klatt 스펙트럼 기울기: voice source의 고주파 감쇠
+    // tilt_db = 10dB → decay ≈ 0.33, onemd = 0.67
+    let tilt_decay = 0.33_f64;
+    let tilt_onemd = 1.0 - tilt_decay;
+    let mut voice_last = 0.0_f64;
+
+    // 방사 특성 (Radiation): 입술의 +6dB/oct → first-difference
+    let mut radiation_last = 0.0_f64;
 
     let mut jitter_val = 0.0_f64;
     let mut shimmer_val = 0.0_f64;
-    let mut prev_phase = 0.0_f64;
+    let mut prev_cycle = 0.0_f64;
+
+    // F4/F5 고정 파라미터
+    let f4 = 3300.0_f64;
+    let bw4 = 250.0_f64;
+    let f5 = 4500.0_f64;
+    let bw5 = 300.0_f64;
 
     for i in 0..num_samples {
         let env = envelope(i, num_samples, 0.05, 0.1);
 
-        // 글로탈 주기 경계 → 지터/시머 갱신
-        let cur_cycle = phase.floor();
-        if cur_cycle > prev_phase.floor() {
-            jitter_val = rng.next_f64() * 0.015;
-            shimmer_val = rng.next_f64() * 0.03;
+        // 지터/시머 (글로탈 주기 경계에서 갱신)
+        let cycle = phase.floor();
+        if cycle > prev_cycle.floor() {
+            jitter_val = rng.next_f64() * 0.012;
+            shimmer_val = rng.next_f64() * 0.025;
         }
-        prev_phase = phase;
+        prev_cycle = phase;
 
-        // 포먼트 전이 계산
-        let formants = if i < onset_end && onset_end > 0 {
-            // 시작 전이: 이전 음소 → 현재 음소
+        // 포먼트 전이 보간
+        let fmt = if i < onset_end && onset_end > 0 {
             let t = i as f64 / onset_end as f64;
             match prev_formants {
-                Some(pf) => {
-                    let from = transition_bandwidth(pf);
-                    interpolate_formants(&from, &target_formants, t)
-                }
-                None => target_formants,
+                Some(pf) => interpolate_formants(&transition_bandwidth(pf), &target, t),
+                None => target,
             }
         } else if i >= offset_start && offset_start < num_samples {
-            // 끝 전이: 현재 음소 → 다음 음소
-            let t = (i - offset_start) as f64 / (num_samples - offset_start) as f64;
+            let t = (i - offset_start) as f64 / (num_samples - offset_start).max(1) as f64;
             match next_formants {
-                Some(nf) => {
-                    let to = transition_bandwidth(nf);
-                    interpolate_formants(&target_formants, &to, t)
-                }
-                None => target_formants,
+                Some(nf) => interpolate_formants(&target, &transition_bandwidth(nf), t),
+                None => target,
             }
         } else {
-            target_formants
+            target
         };
 
-        // LF 글로탈 소스
-        let source = glottal_pulse_lf(phase) * (1.0 + shimmer_val)
-            + aspiration_noise(&mut rng);
-        let source_tilted = tilt.process(source);
+        // === Klatt 소스 ===
+        // LF 글로탈 펄스 + 시머
+        let glottal = glottal_pulse_lf(phase) * (1.0 + shimmer_val);
 
-        // 포먼트 필터 (보간된 주파수/대역폭 적용)
-        let f1_out = res1.process(source_tilted, formants.f1, formants.bw1, SAMPLE_RATE as f64);
-        let f2_out = res2.process(source_tilted, formants.f2, formants.bw2, SAMPLE_RATE as f64);
-        let f3_out = res3.process(source_tilted, formants.f3, formants.bw3, SAMPLE_RATE as f64);
+        // 스펙트럼 기울기 (Klatt TL 필터)
+        let voice_tilted = glottal * tilt_onemd + voice_last * tilt_decay;
+        voice_last = voice_tilted;
 
-        let sample = (f1_out * 1.0 + f2_out * 0.7 + f3_out * 0.3) * amp * env;
-        samples.push(sample);
+        // 기식 노이즈 혼합 (Klatt AH: 자연 음성에 항상 약간 존재)
+        let source = voice_tilted + rng.next_f64() * 0.04;
+
+        // === Klatt 캐스케이드 필터 (직렬, 3단계) + 고정 F4/F5 병렬 추가 ===
+        // 캐스케이드: 소스 → F1 → F2 → F3
+        let after_f1 = res1.process(source, fmt.f1, fmt.bw1, SAMPLE_RATE as f64);
+        let after_f2 = res2.process(after_f1, fmt.f2, fmt.bw2, SAMPLE_RATE as f64);
+        let cascade_out = res3.process(after_f2, fmt.f3, fmt.bw3, SAMPLE_RATE as f64);
+
+        // F4/F5: 소스에서 직접 병렬 (고정 포먼트로 풍성함 추가)
+        let f4_out = res4.process(source, f4, bw4, SAMPLE_RATE as f64);
+        let f5_out = res5.process(source, f5, bw5, SAMPLE_RATE as f64);
+
+        // 캐스케이드(주 소리) + F4/F5(보조) 합성
+        let vocal = cascade_out * 200.0 + f4_out * 10.0 + f5_out * 5.0;
+
+        // === 방사 특성 (Radiation) ===
+        // 입술: first-difference → +6dB/oct 하이패스
+        let radiated = vocal - radiation_last;
+        radiation_last = vocal;
+
+        samples.push(radiated * amp * env);
 
         phase += (f0 * (1.0 + jitter_val)) / SAMPLE_RATE as f64;
     }
