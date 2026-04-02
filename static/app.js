@@ -48,10 +48,11 @@ async function synthesize() {
     try {
         let data;
         if (engine === 'neural') {
+            const voice = document.getElementById('voice-select').value || undefined;
             const res = await fetch(`${API_BASE}/api/neural-synthesize`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text, language: lang }),
+                body: JSON.stringify({ text, language: lang, voice }),
             });
             data = await res.json();
             if (data.error) {
@@ -862,21 +863,51 @@ function switchDetail(mode) {
     }
 }
 
+let engineInfo = null;
+
 async function checkEngines() {
     try {
         const res = await fetch(`${API_BASE}/api/engines`);
-        const info = await res.json();
+        engineInfo = await res.json();
         const el = document.getElementById('engine-status');
-        const ko = info.korean_ready ? '<span class="ok">한국어 준비됨</span>' : '<span class="missing">한국어: pip install piper-tts + 모델 다운로드 필요</span>';
-        const en = info.english_ready ? '<span class="ok">영어 준비됨</span>' : '<span class="missing">영어: pip install kokoro-tts 필요</span>';
-        el.innerHTML = `신경망 엔진: ${ko} | ${en}`;
-
-        // 엔진 선택 변경 시 상태 표시
-        document.getElementById('engine-select').addEventListener('change', (e) => {
-            el.classList.toggle('visible', e.target.value === 'neural');
-        });
+        if (engineInfo.korean_ready) {
+            el.innerHTML = `<span class="ok">macOS 음성 준비됨</span> — 한국어 ${engineInfo.korean_voices?.length || 0}개, 영어 ${engineInfo.english_voices?.length || 0}개`;
+        } else {
+            el.innerHTML = `<span class="missing">${engineInfo.install_guide}</span>`;
+        }
     } catch (e) {}
 }
+
+function onEngineChange() {
+    const engine = document.getElementById('engine-select').value;
+    const voiceSel = document.getElementById('voice-select');
+    const el = document.getElementById('engine-status');
+
+    if (engine === 'neural' && engineInfo) {
+        el.classList.add('visible');
+        voiceSel.style.display = 'inline-block';
+        // 음성 목록 채우기
+        const lang = document.getElementById('language-select').value;
+        const voices = lang === 'en' ? engineInfo.english_voices : engineInfo.korean_voices;
+        voiceSel.innerHTML = '';
+        if (voices) {
+            voices.forEach(v => {
+                const opt = document.createElement('option');
+                opt.value = v.id;
+                opt.textContent = v.name;
+                voiceSel.appendChild(opt);
+            });
+        }
+    } else {
+        el.classList.remove('visible');
+        voiceSel.style.display = 'none';
+    }
+}
+
+// 언어 변경 시 음성 목록도 갱신
+document.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('language-select').addEventListener('change', onEngineChange);
+});
 
 document.addEventListener('DOMContentLoaded', () => {
     loadPipeline();

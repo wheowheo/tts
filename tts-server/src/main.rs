@@ -183,11 +183,20 @@ fn base64_encode(data: &[u8]) -> String {
     result
 }
 
-/// 신경망 TTS 합성 엔드포인트
-async fn neural_synthesize(Json(req): Json<SynthesizeRequest>) -> Result<Json<serde_json::Value>, StatusCode> {
+#[derive(serde::Deserialize)]
+struct NeuralRequest {
+    text: String,
+    language: Option<String>,
+    voice: Option<String>,
+}
+
+/// 로컬 TTS 합성 엔드포인트 (macOS say)
+async fn neural_synthesize(Json(req): Json<NeuralRequest>) -> Result<Json<serde_json::Value>, StatusCode> {
     let lang = req.language.as_deref().unwrap_or("ko");
 
-    let result = if lang == "en" {
+    let result = if let Some(voice) = &req.voice {
+        neural::synthesize_with_voice(&req.text, voice)
+    } else if lang == "en" {
         neural::synthesize_english(&req.text)
     } else {
         neural::synthesize_korean(&req.text)
@@ -196,14 +205,13 @@ async fn neural_synthesize(Json(req): Json<SynthesizeRequest>) -> Result<Json<se
     match result {
         Ok(audio) => {
             let audio_base64 = base64_encode(&audio.wav_data);
-            let is_mp3 = audio.engine.ends_with("-mp3");
             Ok(Json(serde_json::json!({
                 "text": req.text,
                 "audio_base64": audio_base64,
                 "sample_rate": audio.sample_rate,
                 "engine": audio.engine,
                 "language": lang,
-                "format": if is_mp3 { "mp3" } else { "wav" },
+                "format": "wav",
             })))
         }
         Err(msg) => {

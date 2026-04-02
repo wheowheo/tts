@@ -1,9 +1,7 @@
-/// 신경망 TTS 엔진 모듈
-/// edge-tts (한국어/영어) + piper (영어 로컬 폴백)
+/// 로컬 TTS 엔진 모듈
+/// macOS `say` 명령 기반 — 설치 불필요, 인터넷 불필요
 
-use std::io::Read;
 use std::process::{Command, Stdio};
-use std::path::PathBuf;
 
 pub struct NeuralAudio {
     pub wav_data: Vec<u8>,
@@ -11,149 +9,114 @@ pub struct NeuralAudio {
     pub engine: String,
 }
 
-/// edge-tts CLI 탐색
-fn find_edge_tts() -> Option<String> {
-    for cmd in &["edge-tts"] {
-        if Command::new(cmd).arg("--help")
-            .stdout(Stdio::null()).stderr(Stdio::null())
-            .status().map(|s| s.success()).unwrap_or(false)
-        {
-            return Some(cmd.to_string());
-        }
-    }
-    let home = std::env::var("HOME").unwrap_or_default();
-    for ver in &["3.9", "3.10", "3.11", "3.12"] {
-        let path = format!("{}/Library/Python/{}/bin/edge-tts", home, ver);
-        if std::path::Path::new(&path).exists() {
-            return Some(path);
-        }
-    }
-    None
-}
+/// 한국어 음성 목록
+const KO_VOICES: &[(&str, &str)] = &[
+    ("Yuna", "유나 (기본)"),
+    ("Shelley", "Shelley"),
+    ("Sandy", "Sandy"),
+    ("Reed", "Reed"),
+    ("Eddy", "Eddy"),
+    ("Flo", "Flo"),
+];
 
-/// piper CLI 탐색 (로컬 폴백용)
-fn find_piper_bin() -> Option<String> {
-    if Command::new("piper").arg("--help")
-        .stdout(Stdio::null()).stderr(Stdio::null())
-        .status().map(|s| s.success()).unwrap_or(false)
-    {
-        return Some("piper".into());
-    }
-    let home = std::env::var("HOME").unwrap_or_default();
-    for ver in &["3.9", "3.10", "3.11", "3.12"] {
-        let path = format!("{}/Library/Python/{}/bin/piper", home, ver);
-        if std::path::Path::new(&path).exists() {
-            return Some(path);
-        }
-    }
-    None
-}
+/// 영어 음성 목록
+const EN_VOICES: &[(&str, &str)] = &[
+    ("Samantha", "Samantha (기본)"),
+    ("Alex", "Alex"),
+    ("Daniel", "Daniel (영국)"),
+    ("Karen", "Karen (호주)"),
+];
 
-/// 한국어 합성: edge-tts (ko-KR-SunHiNeural)
+/// 한국어 합성: macOS say + Yuna
 pub fn synthesize_korean(text: &str) -> Result<NeuralAudio, String> {
-    let edge = find_edge_tts()
-        .ok_or("edge-tts가 설치되어 있지 않습니다. `pip3 install edge-tts`를 실행하세요.")?;
-
-    let tmp = std::env::temp_dir().join("tts_edge_ko.mp3");
-    let output = Command::new(&edge)
-        .args([
-            "--voice", "ko-KR-SunHiNeural",
-            "--text", text,
-            "--write-media", tmp.to_str().unwrap(),
-        ])
-        .output()
-        .map_err(|e| format!("edge-tts 실행 실패: {}", e))?;
-
-    if !output.status.success() {
-        return Err(format!("edge-tts 오류: {}", String::from_utf8_lossy(&output.stderr)));
-    }
-
-    // MP3 → WAV 변환 (ffmpeg 또는 직접 MP3 반환)
-    let mp3_data = std::fs::read(&tmp).map_err(|e| format!("파일 읽기 실패: {}", e))?;
-    let _ = std::fs::remove_file(&tmp);
-
-    // ffmpeg가 있으면 WAV로 변환
-    if let Some(wav) = mp3_to_wav(&mp3_data) {
-        Ok(NeuralAudio { wav_data: wav, sample_rate: 24000, engine: "edge-tts-ko".into() })
-    } else {
-        // ffmpeg 없으면 MP3 그대로 (브라우저에서 재생 가능)
-        Ok(NeuralAudio { wav_data: mp3_data, sample_rate: 24000, engine: "edge-tts-ko-mp3".into() })
-    }
+    synthesize_with_say(text, "Yuna", 24000)
 }
 
-/// 영어 합성: edge-tts (en-US-AriaNeural)
+/// 영어 합성: macOS say + Samantha
 pub fn synthesize_english(text: &str) -> Result<NeuralAudio, String> {
-    let edge = find_edge_tts()
-        .ok_or("edge-tts가 설치되어 있지 않습니다. `pip3 install edge-tts`를 실행하세요.")?;
-
-    let tmp = std::env::temp_dir().join("tts_edge_en.mp3");
-    let output = Command::new(&edge)
-        .args([
-            "--voice", "en-US-AriaNeural",
-            "--text", text,
-            "--write-media", tmp.to_str().unwrap(),
-        ])
-        .output()
-        .map_err(|e| format!("edge-tts 실행 실패: {}", e))?;
-
-    if !output.status.success() {
-        return Err(format!("edge-tts 오류: {}", String::from_utf8_lossy(&output.stderr)));
-    }
-
-    let mp3_data = std::fs::read(&tmp).map_err(|e| format!("파일 읽기 실패: {}", e))?;
-    let _ = std::fs::remove_file(&tmp);
-
-    if let Some(wav) = mp3_to_wav(&mp3_data) {
-        Ok(NeuralAudio { wav_data: wav, sample_rate: 24000, engine: "edge-tts-en".into() })
-    } else {
-        Ok(NeuralAudio { wav_data: mp3_data, sample_rate: 24000, engine: "edge-tts-en-mp3".into() })
-    }
+    synthesize_with_say(text, "Samantha", 24000)
 }
 
-/// MP3 → WAV 변환 (ffmpeg 사용)
-fn mp3_to_wav(mp3: &[u8]) -> Option<Vec<u8>> {
-    let tmp_mp3 = std::env::temp_dir().join("tts_tmp.mp3");
-    let tmp_wav = std::env::temp_dir().join("tts_tmp.wav");
-    std::fs::write(&tmp_mp3, mp3).ok()?;
+/// 지정 음성으로 합성
+pub fn synthesize_with_voice(text: &str, voice: &str) -> Result<NeuralAudio, String> {
+    synthesize_with_say(text, voice, 24000)
+}
 
-    let status = Command::new("ffmpeg")
-        .args(["-y", "-i", tmp_mp3.to_str()?, "-ar", "24000", "-ac", "1", "-f", "wav", tmp_wav.to_str()?])
+fn synthesize_with_say(text: &str, voice: &str, target_rate: u32) -> Result<NeuralAudio, String> {
+    let tmp_aiff = std::env::temp_dir().join("tts_say_output.aiff");
+    let tmp_wav = std::env::temp_dir().join("tts_say_output.wav");
+
+    // say → AIFF
+    let status = Command::new("say")
+        .args(["-v", voice, "-o", tmp_aiff.to_str().unwrap(), text])
+        .status()
+        .map_err(|e| format!("say 실행 실패: {}", e))?;
+
+    if !status.success() {
+        return Err(format!("say 오류 (음성 '{}'를 찾을 수 없습니다)", voice));
+    }
+
+    // AIFF → WAV (ffmpeg)
+    let ffmpeg_ok = Command::new("ffmpeg")
+        .args([
+            "-y", "-i", tmp_aiff.to_str().unwrap(),
+            "-ar", &target_rate.to_string(),
+            "-ac", "1", "-f", "wav",
+            tmp_wav.to_str().unwrap(),
+        ])
         .stdout(Stdio::null()).stderr(Stdio::null())
-        .status().ok()?;
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
 
-    let _ = std::fs::remove_file(&tmp_mp3);
+    let _ = std::fs::remove_file(&tmp_aiff);
 
-    if status.success() {
-        let wav = std::fs::read(&tmp_wav).ok()?;
+    if ffmpeg_ok {
+        let wav = std::fs::read(&tmp_wav).map_err(|e| format!("WAV 읽기 실패: {}", e))?;
         let _ = std::fs::remove_file(&tmp_wav);
-        Some(wav)
+        Ok(NeuralAudio {
+            wav_data: wav,
+            sample_rate: target_rate,
+            engine: format!("macos-say-{}", voice),
+        })
     } else {
-        None
+        // ffmpeg 없으면 AIFF 직접 반환
+        let aiff = std::fs::read(&tmp_aiff).unwrap_or_default();
+        let _ = std::fs::remove_file(&tmp_aiff);
+        Err("ffmpeg가 필요합니다. `brew install ffmpeg`를 실행하세요.".into())
     }
 }
 
 /// 엔진 상태 확인
 pub fn check_engines() -> serde_json::Value {
-    let edge_ok = find_edge_tts().is_some();
-    let piper_ok = find_piper_bin().is_some();
+    let say_ok = Command::new("say").arg("--version")
+        .stdout(Stdio::null()).stderr(Stdio::null())
+        .status().map(|_| true).unwrap_or(false);
+
     let ffmpeg_ok = Command::new("ffmpeg").arg("-version")
         .stdout(Stdio::null()).stderr(Stdio::null())
         .status().map(|s| s.success()).unwrap_or(false);
 
+    // 사용 가능한 한국어 음성 확인
+    let ko_voices: Vec<&str> = if say_ok {
+        let output = Command::new("say").arg("-v").arg("?").output().ok();
+        if let Some(out) = output {
+            let list = String::from_utf8_lossy(&out.stdout);
+            KO_VOICES.iter()
+                .filter(|(name, _)| list.contains(name))
+                .map(|(name, _)| *name)
+                .collect()
+        } else { vec![] }
+    } else { vec![] };
+
     serde_json::json!({
-        "edge_tts_installed": edge_ok,
-        "piper_installed": piper_ok,
+        "say_available": say_ok,
         "ffmpeg_installed": ffmpeg_ok,
-        "korean_ready": edge_ok,
-        "english_ready": edge_ok,
-        "audio_format": if ffmpeg_ok { "wav" } else { "mp3" },
-        "install_guide": {
-            "edge_tts": "pip3 install edge-tts",
-            "ffmpeg": "brew install ffmpeg (선택: MP3→WAV 변환용)",
-        },
-        "voices": {
-            "korean": "ko-KR-SunHiNeural",
-            "english": "en-US-AriaNeural",
-        }
+        "korean_ready": say_ok && ffmpeg_ok && !ko_voices.is_empty(),
+        "english_ready": say_ok && ffmpeg_ok,
+        "korean_voices": KO_VOICES.iter().map(|(n, d)| serde_json::json!({"id": n, "name": d})).collect::<Vec<_>>(),
+        "english_voices": EN_VOICES.iter().map(|(n, d)| serde_json::json!({"id": n, "name": d})).collect::<Vec<_>>(),
+        "type": "local",
+        "install_guide": if ffmpeg_ok { "설치 완료" } else { "brew install ffmpeg" },
     })
 }
