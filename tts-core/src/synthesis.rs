@@ -666,6 +666,35 @@ pub fn synthesize_all(prosody_units: &[ProsodyUnit]) -> Vec<i16> {
         }
     }
 
+    // Klatt 출력 로우패스 필터: 5kHz 컷오프 (치치직 고주파 제거)
+    // 2차 버터워스 근사: y[n] = b0*x[n] + b1*x[n-1] + b2*x[n-2] - a1*y[n-1] - a2*y[n-2]
+    // fc = 5000Hz, fs = 44100Hz
+    {
+        let fc = 5000.0_f64;
+        let w = (std::f64::consts::PI * fc / SAMPLE_RATE as f64).tan();
+        let w2 = w * w;
+        let r = std::f64::consts::SQRT_2; // Q = 0.707 (Butterworth)
+        let norm = 1.0 / (1.0 + r * w + w2);
+        let b0 = w2 * norm;
+        let b1 = 2.0 * b0;
+        let b2 = b0;
+        let a1 = 2.0 * (w2 - 1.0) * norm;
+        let a2 = (1.0 - r * w + w2) * norm;
+
+        let mut x1 = 0.0_f64;
+        let mut x2 = 0.0_f64;
+        let mut y1 = 0.0_f64;
+        let mut y2 = 0.0_f64;
+
+        for s in compressed.iter_mut() {
+            let x0 = *s;
+            let y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+            x2 = x1; x1 = x0;
+            y2 = y1; y1 = y0;
+            *s = y0;
+        }
+    }
+
     // 정규화 및 i16 변환
     let max_val = compressed.iter().map(|s| s.abs()).fold(0.0f64, f64::max);
     let scale = if max_val > 0.001 { 0.8 / max_val } else { 1.0 };

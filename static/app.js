@@ -114,6 +114,8 @@ function renderResults(data) {
     const audioSection = document.getElementById('audio-section');
     audioSection.style.display = 'block';
     if (data.audio_base64) {
+        lastWavBase64 = data.audio_base64;
+        document.getElementById('download-btn').disabled = false;
         // A/B 비교를 위해 이전 오디오 저장
         if (currentAudioBase64) {
             previousAudioBase64 = currentAudioBase64;
@@ -477,6 +479,7 @@ function updateTuningValue(param) {
     const slider = document.getElementById(`${param}-slider`);
     const display = document.getElementById(`${param}-value`);
     display.textContent = slider.value;
+    onSliderChange();
 }
 
 const PRESETS = {
@@ -541,18 +544,143 @@ let lastAudioData = null; // Float32Array of decoded audio
 function switchViz(mode) {
     const wfCanvas = document.getElementById('waveform-canvas');
     const sgCanvas = document.getElementById('spectrogram-canvas');
+    const qPanel = document.getElementById('quality-panel');
     document.querySelectorAll('.viz-tab').forEach(t => t.classList.remove('active'));
 
+    wfCanvas.style.display = 'none';
+    sgCanvas.style.display = 'none';
+    qPanel.style.display = 'none';
+
     if (mode === 'spectrogram') {
-        wfCanvas.style.display = 'none';
         sgCanvas.style.display = 'block';
         document.querySelectorAll('.viz-tab')[1].classList.add('active');
         if (lastAudioData) drawSpectrogram(lastAudioData);
+    } else if (mode === 'quality') {
+        qPanel.style.display = 'block';
+        document.querySelectorAll('.viz-tab')[2].classList.add('active');
+        if (lastAudioData) runQualityCheck(lastAudioData);
     } else {
         wfCanvas.style.display = 'block';
-        sgCanvas.style.display = 'none';
         document.querySelectorAll('.viz-tab')[0].classList.add('active');
     }
+}
+
+// === 품질 검증 ===
+function runQualityCheck(audioData) {
+    const n = audioData.length;
+    const sr = 44100;
+    const container = document.getElementById('quality-results');
+
+    // 1. 클릭 감지
+    let clicks = 0;
+    for (let i = 1; i < n; i++) {
+        if (Math.abs(audioData[i] - audioData[i-1]) > 0.3) clicks++;
+    }
+
+    // 2. 무음 비율
+    let silence = 0;
+    for (let i = 0; i < n; i++) {
+        if (Math.abs(audioData[i]) < 0.003) silence++;
+    }
+    const silencePct = (silence / n * 100).toFixed(1);
+
+    // 3. 고주파 잡음 비율 (50ms 윈도우)
+    const winSize = Math.floor(sr * 0.05);
+    let noisyWindows = 0, totalWindows = 0;
+    for (let w = 0; w < n - winSize; w += winSize) {
+        let rms = 0, hf = 0;
+        for (let i = w; i < w + winSize; i++) {
+            rms += audioData[i] * audioData[i];
+            if (i > w) hf += (audioData[i] - audioData[i-1]) ** 2;
+        }
+        rms = Math.sqrt(rms / winSize);
+        hf = Math.sqrt(hf / (winSize - 1));
+        totalWindows++;
+        if (rms > 0.005 && hf / (rms + 0.001) > 0.4) noisyWindows++;
+    }
+
+    // 4. RMS
+    let totalRms = 0;
+    for (let i = 0; i < n; i++) totalRms += audioData[i] ** 2;
+    totalRms = Math.sqrt(totalRms / n);
+
+    // 5. 동적 범위
+    let maxVal = 0;
+    for (let i = 0; i < n; i++) maxVal = Math.max(maxVal, Math.abs(audioData[i]));
+    const crestFactor = maxVal / (totalRms + 0.001);
+
+    // 판정
+    const clickGrade = clicks === 0 ? '✅ 없음' : clicks < 5 ? '⚠️ ' + clicks + '개' : '❌ ' + clicks + '개';
+    const silenceGrade = silencePct < 15 ? '✅' : silencePct < 30 ? '⚠️' : '❌';
+    const noiseGrade = noisyWindows === 0 ? '✅ 없음' : noisyWindows < 3 ? '⚠️ ' + noisyWindows + '구간' : '❌ ' + noisyWindows + '구간';
+    const crestGrade = crestFactor < 6 ? '✅' : crestFactor < 10 ? '⚠️' : '❌';
+
+    container.innerHTML = `
+        <div class="quality-item">
+            <div class="q-label">클릭/크래클링</div>
+            <div class="q-value">${clickGrade}</div>
+            <div class="q-detail">인접 샘플 급변 (>0.3) 횟수</div>
+        </div>
+        <div class="quality-item">
+            <div class="q-label">무음 비율</div>
+            <div class="q-value">${silenceGrade} ${silencePct}%</div>
+            <div class="q-detail">목표: 15% 이하 (pause 포함)</div>
+        </div>
+        <div class="quality-item">
+            <div class="q-label">잡음 구간</div>
+            <div class="q-value">${noiseGrade}</div>
+            <div class="q-detail">고주파 에너지 >40% 구간 수 (총 ${totalWindows}개 중)</div>
+        </div>
+        <div class="quality-item">
+            <div class="q-label">동적 범위</div>
+            <div class="q-value">${crestGrade} ${crestFactor.toFixed(1)}x</div>
+            <div class="q-detail">max/rms 비율 (목표: 6x 이하)</div>
+        </div>
+        <div class="quality-item">
+            <div class="q-label">RMS 레벨</div>
+            <div class="q-value">${(totalRms * 100).toFixed(1)}%</div>
+            <div class="q-detail">전체 평균 에너지</div>
+        </div>
+        <div class="quality-item">
+            <div class="q-label">길이</div>
+            <div class="q-value">${(n / sr).toFixed(2)}초</div>
+            <div class="q-detail">${n.toLocaleString()} 샘플</div>
+        </div>
+    `;
+}
+
+// === WAV 다운로드 ===
+let lastWavBase64 = null;
+
+function downloadWav() {
+    if (!lastWavBase64) return;
+    const binary = atob(lastWavBase64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const blob = new Blob([bytes], { type: 'audio/wav' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'tts_output.wav';
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
+// === 자동 재합성 ===
+let autoResynthEnabled = false;
+let autoResynthTimer = null;
+
+function toggleAutoResynth() {
+    autoResynthEnabled = document.getElementById('auto-resynth').checked;
+}
+
+function onSliderChange() {
+    if (!autoResynthEnabled) return;
+    if (autoResynthTimer) clearTimeout(autoResynthTimer);
+    autoResynthTimer = setTimeout(() => {
+        const text = document.getElementById('text-input').value.trim();
+        if (text) synthesize();
+    }, 300); // 300ms 디바운스
 }
 
 function drawSpectrogram(audioData) {
