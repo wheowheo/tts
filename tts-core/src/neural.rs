@@ -19,31 +19,70 @@ fn find_piper_model() -> Option<PathBuf> {
         let path = PathBuf::from(p);
         if path.exists() { return Some(path); }
     }
-    // 2. models/ 디렉토리
-    for name in &["models/ko-piper.onnx", "models/piper-kss-korean.onnx"] {
+    // 2. models/ 디렉토리 (CWD 기준 + 실행 파일 기준)
+    let candidates = &["models/ko-piper-espeak.onnx", "models/ko-piper.onnx", "models/piper-kss-korean.onnx"];
+    for name in candidates {
         let path = PathBuf::from(name);
         if path.exists() { return Some(path); }
+    }
+    // 3. Cargo 프로젝트 루트 기준 (static과 같은 레벨)
+    if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
+        for name in candidates {
+            let path = PathBuf::from(&manifest).parent().unwrap_or(std::path::Path::new(".")).join(name);
+            if path.exists() { return Some(path); }
+        }
+    }
+    // 4. 현재 실행 파일 위치 기준
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for name in candidates {
+                let path = dir.join("../../").join(name);
+                if path.exists() { return Some(std::fs::canonicalize(path).ok()?); }
+            }
+        }
+    }
+    None
+}
+
+/// Piper CLI 경로 탐색
+fn find_piper_bin() -> Option<String> {
+    // 1. PATH에 있는 경우
+    if Command::new("piper").arg("--help")
+        .stdout(Stdio::null()).stderr(Stdio::null())
+        .status().map(|s| s.success()).unwrap_or(false)
+    {
+        return Some("piper".into());
+    }
+    // 2. Python 사용자 bin 경로
+    let home = std::env::var("HOME").unwrap_or_default();
+    for path in &[
+        format!("{}/Library/Python/3.9/bin/piper", home),
+        format!("{}/Library/Python/3.10/bin/piper", home),
+        format!("{}/Library/Python/3.11/bin/piper", home),
+        format!("{}/Library/Python/3.12/bin/piper", home),
+        format!("{}/.local/bin/piper", home),
+    ] {
+        if std::path::Path::new(path).exists() {
+            return Some(path.clone());
+        }
     }
     None
 }
 
 /// Piper CLI가 설치되어 있는지 확인
 fn piper_available() -> bool {
-    Command::new("piper").arg("--help")
-        .stdout(Stdio::null()).stderr(Stdio::null())
-        .status().map(|s| s.success()).unwrap_or(false)
+    find_piper_bin().is_some()
 }
 
 /// 한국어 합성: Piper + KSS 모델
 pub fn synthesize_korean(text: &str) -> Result<NeuralAudio, String> {
-    if !piper_available() {
-        return Err("piper가 설치되어 있지 않습니다. `pip install piper-tts`를 실행하세요.".into());
-    }
+    let piper_bin = find_piper_bin()
+        .ok_or("piper가 설치되어 있지 않습니다. `pip3 install piper-tts pathvalidate`를 실행하세요.")?;
 
     let model = find_piper_model()
-        .ok_or("한국어 모델을 찾을 수 없습니다. models/ko-piper.onnx를 다운로드하세요.")?;
+        .ok_or("한국어 모델을 찾을 수 없습니다. models/ 디렉토리에 ko-piper-espeak.onnx를 준비하세요.")?;
 
-    let mut child = Command::new("piper")
+    let mut child = Command::new(&piper_bin)
         .args(["--model", model.to_str().unwrap(), "--output-raw"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -110,8 +149,8 @@ fn synthesize_with_kokoro_cli(text: &str) -> Result<NeuralAudio, String> {
 }
 
 fn synthesize_with_piper_english(text: &str) -> Result<NeuralAudio, String> {
-    // piper 기본 영어 모델 사용
-    let mut child = Command::new("piper")
+    let piper_bin = find_piper_bin().ok_or("piper not found")?;
+    let mut child = Command::new(&piper_bin)
         .args(["--model", "en_US-lessac-medium", "--output-raw"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
