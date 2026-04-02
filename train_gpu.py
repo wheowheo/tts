@@ -36,7 +36,7 @@ def main():
         sys.exit(1)
 
     gpu_name = torch.cuda.get_device_name(0)
-    vram_gb = torch.cuda.get_device_properties(0).total_mem / 1e9
+    vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
     print(f"GPU: {gpu_name} ({vram_gb:.0f}GB VRAM)")
     print(f"설정: batch_size={args.batch_size}, epochs={args.epochs}, fp16={args.fp16}")
 
