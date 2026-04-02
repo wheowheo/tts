@@ -9,23 +9,26 @@ pub struct NeuralAudio {
     pub engine: String,
 }
 
-/// 한국어 음성 목록
-const KO_VOICES: &[(&str, &str)] = &[
-    ("Yuna", "유나 (기본)"),
-    ("Shelley", "Shelley"),
-    ("Sandy", "Sandy"),
-    ("Reed", "Reed"),
-    ("Eddy", "Eddy"),
-    ("Flo", "Flo"),
-];
+/// 설치된 음성 목록을 동적으로 가져옴
+fn get_installed_voices(lang_prefix: &str) -> Vec<(String, String)> {
+    let output = Command::new("say").args(["-v", "?"]).output().ok();
+    let Some(out) = output else { return vec![] };
+    let list = String::from_utf8_lossy(&out.stdout);
 
-/// 영어 음성 목록
-const EN_VOICES: &[(&str, &str)] = &[
-    ("Samantha", "Samantha (기본)"),
-    ("Alex", "Alex"),
-    ("Daniel", "Daniel (영국)"),
-    ("Karen", "Karen (호주)"),
-];
+    list.lines()
+        .filter(|l| l.contains(lang_prefix))
+        .filter_map(|line| {
+            let name = line.split_whitespace().next()?.to_string();
+            // 괄호 안 한글 설명 추출
+            let desc = if let Some(start) = line.find('(') {
+                if let Some(end) = line.find(')') {
+                    format!("{} ({})", &name, &line[start+1..end])
+                } else { name.clone() }
+            } else { name.clone() };
+            Some((name, desc))
+        })
+        .collect()
+}
 
 /// 한국어 합성: macOS say + Yuna
 pub fn synthesize_korean(text: &str) -> Result<NeuralAudio, String> {
@@ -43,6 +46,14 @@ pub fn synthesize_with_voice(text: &str, voice: &str) -> Result<NeuralAudio, Str
 }
 
 fn synthesize_with_say(text: &str, voice: &str, target_rate: u32) -> Result<NeuralAudio, String> {
+    // 음성 존재 확인
+    let voice_list = Command::new("say").args(["-v", "?"]).output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+    if !voice_list.lines().any(|l| l.starts_with(voice) || l.contains(&format!("{} ", voice))) {
+        return Err(format!("음성 '{}'를 찾을 수 없습니다. 사용 가능: Yuna, Shelley, Sandy, Reed, Eddy, Flo (한국어), Samantha, Alex, Daniel, Karen (영어)", voice));
+    }
+
     let tmp_aiff = std::env::temp_dir().join("tts_say_output.aiff");
     let tmp_wav = std::env::temp_dir().join("tts_say_output.wav");
 
@@ -53,7 +64,15 @@ fn synthesize_with_say(text: &str, voice: &str, target_rate: u32) -> Result<Neur
         .map_err(|e| format!("say 실행 실패: {}", e))?;
 
     if !status.success() {
-        return Err(format!("say 오류 (음성 '{}'를 찾을 수 없습니다)", voice));
+        let _ = std::fs::remove_file(&tmp_aiff);
+        return Err(format!("say 오류 — 음성 '{}'를 찾을 수 없습니다", voice));
+    }
+
+    // AIFF 파일 크기 확인 (빈 출력 감지)
+    let aiff_size = std::fs::metadata(&tmp_aiff).map(|m| m.len()).unwrap_or(0);
+    if aiff_size < 100 {
+        let _ = std::fs::remove_file(&tmp_aiff);
+        return Err(format!("say가 빈 출력을 생성했습니다 (음성: {})", voice));
     }
 
     // AIFF → WAV (ffmpeg)
@@ -97,25 +116,16 @@ pub fn check_engines() -> serde_json::Value {
         .stdout(Stdio::null()).stderr(Stdio::null())
         .status().map(|s| s.success()).unwrap_or(false);
 
-    // 사용 가능한 한국어 음성 확인
-    let ko_voices: Vec<&str> = if say_ok {
-        let output = Command::new("say").arg("-v").arg("?").output().ok();
-        if let Some(out) = output {
-            let list = String::from_utf8_lossy(&out.stdout);
-            KO_VOICES.iter()
-                .filter(|(name, _)| list.contains(name))
-                .map(|(name, _)| *name)
-                .collect()
-        } else { vec![] }
-    } else { vec![] };
+    let ko_voices = if say_ok { get_installed_voices("ko_KR") } else { vec![] };
+    let en_voices = if say_ok { get_installed_voices("en_US") } else { vec![] };
 
     serde_json::json!({
         "say_available": say_ok,
         "ffmpeg_installed": ffmpeg_ok,
         "korean_ready": say_ok && ffmpeg_ok && !ko_voices.is_empty(),
-        "english_ready": say_ok && ffmpeg_ok,
-        "korean_voices": KO_VOICES.iter().map(|(n, d)| serde_json::json!({"id": n, "name": d})).collect::<Vec<_>>(),
-        "english_voices": EN_VOICES.iter().map(|(n, d)| serde_json::json!({"id": n, "name": d})).collect::<Vec<_>>(),
+        "english_ready": say_ok && ffmpeg_ok && !en_voices.is_empty(),
+        "korean_voices": ko_voices.iter().map(|(n, d)| serde_json::json!({"id": n, "name": d})).collect::<Vec<_>>(),
+        "english_voices": en_voices.iter().map(|(n, d)| serde_json::json!({"id": n, "name": d})).collect::<Vec<_>>(),
         "type": "local",
         "install_guide": if ffmpeg_ok { "설치 완료" } else { "brew install ffmpeg" },
     })
