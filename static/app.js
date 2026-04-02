@@ -112,10 +112,10 @@ function renderResults(data) {
     });
 
     const audioSection = document.getElementById('audio-section');
+    audioSection.style.display = 'block';
     if (data.audio_base64) {
-        audioSection.style.display = 'block';
+        setupAudioPlayback(data.audio_base64);
     } else {
-        audioSection.style.display = 'block';
         drawEmptyWaveform();
     }
 }
@@ -308,7 +308,142 @@ function drawEmptyWaveform() {
     ctx.fillStyle = '#999';
     ctx.font = '14px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('Phase 4에서 파형이 표시됩니다', w / 2, h / 2 - 10);
+    ctx.fillText('합성 실행을 눌러 파형을 생성하세요', w / 2, h / 2 - 10);
+}
+
+// 오디오 재생 및 파형 시각화
+let currentAudioBuffer = null;
+let audioContext = null;
+let currentSource = null;
+
+function setupAudioPlayback(base64Audio) {
+    const binaryStr = atob(base64Audio);
+    const bytes = new Uint8Array(binaryStr.length);
+    for (let i = 0; i < binaryStr.length; i++) {
+        bytes[i] = binaryStr.charCodeAt(i);
+    }
+
+    if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    }
+
+    audioContext.decodeAudioData(bytes.buffer.slice(0)).then(buffer => {
+        currentAudioBuffer = buffer;
+        const playBtn = document.getElementById('play-btn');
+        playBtn.disabled = false;
+        playBtn.onclick = playAudio;
+        drawWaveform(buffer);
+    }).catch(err => {
+        console.error('오디오 디코딩 실패:', err);
+        // 폴백: WAV 데이터에서 직접 파형 그리기
+        drawWaveformFromBytes(bytes);
+        const playBtn = document.getElementById('play-btn');
+        playBtn.disabled = false;
+        playBtn.onclick = () => {
+            const blob = new Blob([bytes], { type: 'audio/wav' });
+            const url = URL.createObjectURL(blob);
+            const audio = new Audio(url);
+            audio.play();
+        };
+    });
+}
+
+function playAudio() {
+    if (!currentAudioBuffer || !audioContext) return;
+
+    if (currentSource) {
+        try { currentSource.stop(); } catch(e) {}
+    }
+
+    currentSource = audioContext.createBufferSource();
+    currentSource.buffer = currentAudioBuffer;
+    currentSource.connect(audioContext.destination);
+    currentSource.start(0);
+
+    const playBtn = document.getElementById('play-btn');
+    playBtn.textContent = '재생 중...';
+    currentSource.onended = () => {
+        playBtn.textContent = '재생';
+    };
+}
+
+function drawWaveform(audioBuffer) {
+    const canvas = document.getElementById('waveform-canvas');
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+
+    const data = audioBuffer.getChannelData(0);
+    drawWaveformData(ctx, data, w, h);
+}
+
+function drawWaveformFromBytes(wavBytes) {
+    const canvas = document.getElementById('waveform-canvas');
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+
+    // WAV 헤더 건너뛰기 (44바이트), 16-bit PCM 추출
+    const view = new DataView(wavBytes.buffer);
+    const numSamples = (wavBytes.length - 44) / 2;
+    const data = new Float32Array(numSamples);
+    for (let i = 0; i < numSamples; i++) {
+        data[i] = view.getInt16(44 + i * 2, true) / 32768;
+    }
+    drawWaveformData(ctx, data, w, h);
+}
+
+function drawWaveformData(ctx, data, w, h) {
+    ctx.fillStyle = '#16213e';
+    ctx.fillRect(0, 0, w, h);
+
+    // 중앙선
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 0.5;
+    ctx.beginPath();
+    ctx.moveTo(0, h / 2);
+    ctx.lineTo(w, h / 2);
+    ctx.stroke();
+
+    // 파형
+    const step = Math.max(1, Math.floor(data.length / w));
+    ctx.strokeStyle = '#4ade80';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+
+    for (let x = 0; x < w; x++) {
+        const idx = Math.floor(x * data.length / w);
+        let min = 1, max = -1;
+        for (let j = 0; j < step; j++) {
+            const val = data[idx + j] || 0;
+            if (val < min) min = val;
+            if (val > max) max = val;
+        }
+        const yMin = (1 - max) * h / 2;
+        const yMax = (1 - min) * h / 2;
+        ctx.moveTo(x, yMin);
+        ctx.lineTo(x, yMax);
+    }
+    ctx.stroke();
+
+    // 시간 표시
+    const duration = data.length / 44100;
+    ctx.fillStyle = '#666';
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('0s', 4, h - 4);
+    ctx.textAlign = 'right';
+    ctx.fillText(`${duration.toFixed(2)}s`, w - 4, h - 4);
+    ctx.textAlign = 'center';
+    ctx.fillText(`${(duration / 2).toFixed(2)}s`, w / 2, h - 4);
 }
 
 document.addEventListener('DOMContentLoaded', loadPipeline);

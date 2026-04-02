@@ -8,7 +8,7 @@ use tower_http::services::ServeDir;
 use tower_http::cors::CorsLayer;
 use tts_core::{
     PipelineInfo, PipelineResult, PipelineStage, SynthesizeRequest, SynthesizeResponse,
-    hangul, prosody,
+    hangul, prosody, synthesis,
 };
 
 #[derive(serde::Deserialize)]
@@ -68,6 +68,11 @@ async fn synthesize(Json(req): Json<SynthesizeRequest>) -> Result<Json<Synthesiz
 
     let total_duration: f32 = prosody_units.iter().map(|u| u.duration_ms).sum();
 
+    // 파형 합성
+    let pcm_samples = synthesis::synthesize_all(&prosody_units);
+    let wav_data = synthesis::encode_wav(&pcm_samples, 44100, 1);
+    let audio_base64 = base64_encode(&wav_data);
+
     let pipeline = vec![
         PipelineResult {
             stage: PipelineStage::TextInput,
@@ -101,22 +106,56 @@ async fn synthesize(Json(req): Json<SynthesizeRequest>) -> Result<Json<Synthesiz
         PipelineResult {
             stage: PipelineStage::WaveformSynthesis,
             label: "파형 합성".into(),
-            data: serde_json::json!({ "note": "Phase 4에서 구현 예정" }),
+            data: serde_json::json!({
+                "sample_count": pcm_samples.len(),
+                "duration_seconds": pcm_samples.len() as f64 / 44100.0,
+            }),
         },
         PipelineResult {
             stage: PipelineStage::PcmOutput,
             label: "PCM 출력".into(),
-            data: serde_json::json!({ "note": "Phase 4에서 구현 예정" }),
+            data: serde_json::json!({
+                "format": "WAV",
+                "sample_rate": 44100,
+                "channels": 1,
+                "bits_per_sample": 16,
+                "file_size_bytes": wav_data.len(),
+            }),
         },
     ];
 
     Ok(Json(SynthesizeResponse {
         text: req.text,
         pipeline,
-        audio_base64: None,
+        audio_base64: Some(audio_base64),
         sample_rate: 44100,
         channels: 1,
     }))
+}
+
+fn base64_encode(data: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result = String::new();
+    let chunks = data.chunks(3);
+    for chunk in chunks {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        result.push(CHARS[((n >> 18) & 0x3F) as usize] as char);
+        result.push(CHARS[((n >> 12) & 0x3F) as usize] as char);
+        if chunk.len() > 1 {
+            result.push(CHARS[((n >> 6) & 0x3F) as usize] as char);
+        } else {
+            result.push('=');
+        }
+        if chunk.len() > 2 {
+            result.push(CHARS[(n & 0x3F) as usize] as char);
+        } else {
+            result.push('=');
+        }
+    }
+    result
 }
 
 #[tokio::main]
