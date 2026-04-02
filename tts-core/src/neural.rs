@@ -9,23 +9,37 @@ pub struct NeuralAudio {
     pub engine: String,
 }
 
-/// 설치된 음성 목록을 동적으로 가져옴
-fn get_installed_voices(lang_prefix: &str) -> Vec<(String, String)> {
+/// 실제 작동하는 음성만 반환 (say로 테스트 합성하여 빈 출력 필터링)
+fn get_working_voices(lang_prefix: &str) -> Vec<(String, String)> {
     let output = Command::new("say").args(["-v", "?"]).output().ok();
     let Some(out) = output else { return vec![] };
     let list = String::from_utf8_lossy(&out.stdout);
+
+    let test_text = if lang_prefix.starts_with("ko") { "테스트" } else { "test" };
 
     list.lines()
         .filter(|l| l.contains(lang_prefix))
         .filter_map(|line| {
             let name = line.split_whitespace().next()?.to_string();
-            // 괄호 안 한글 설명 추출
-            let desc = if let Some(start) = line.find('(') {
-                if let Some(end) = line.find(')') {
-                    format!("{} ({})", &name, &line[start+1..end])
-                } else { name.clone() }
-            } else { name.clone() };
-            Some((name, desc))
+            // 실제 합성 테스트 — AIFF가 10KB 이상이면 작동
+            let tmp = std::env::temp_dir().join(format!("voice_check_{}.aiff", &name));
+            let ok = Command::new("say")
+                .args(["-v", &name, "-o", tmp.to_str()?, test_text])
+                .stdout(Stdio::null()).stderr(Stdio::null())
+                .status().map(|s| s.success()).unwrap_or(false);
+            let size = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
+            let _ = std::fs::remove_file(&tmp);
+
+            if ok && size > 10000 {
+                let desc = if let Some(start) = line.find('(') {
+                    if let Some(end) = line.find(')') {
+                        format!("{} ({})", &name, &line[start+1..end])
+                    } else { name.clone() }
+                } else { name.clone() };
+                Some((name, desc))
+            } else {
+                None // 다운로드 안 된 음성 제외
+            }
         })
         .collect()
 }
@@ -68,11 +82,11 @@ fn synthesize_with_say(text: &str, voice: &str, target_rate: u32) -> Result<Neur
         return Err(format!("say 오류 — 음성 '{}'를 찾을 수 없습니다", voice));
     }
 
-    // AIFF 파일 크기 확인 (빈 출력 감지)
+    // AIFF 파일 크기 확인 (10KB 미만이면 음성 데이터 없음)
     let aiff_size = std::fs::metadata(&tmp_aiff).map(|m| m.len()).unwrap_or(0);
-    if aiff_size < 100 {
+    if aiff_size < 10000 {
         let _ = std::fs::remove_file(&tmp_aiff);
-        return Err(format!("say가 빈 출력을 생성했습니다 (음성: {})", voice));
+        return Err(format!("음성 '{}'의 데이터가 다운로드되지 않았습니다. macOS 설정 > 손쉬운 사용 > 음성 콘텐츠에서 다운로드하세요.", voice));
     }
 
     // AIFF → WAV (ffmpeg)
@@ -116,8 +130,8 @@ pub fn check_engines() -> serde_json::Value {
         .stdout(Stdio::null()).stderr(Stdio::null())
         .status().map(|s| s.success()).unwrap_or(false);
 
-    let ko_voices = if say_ok { get_installed_voices("ko_KR") } else { vec![] };
-    let en_voices = if say_ok { get_installed_voices("en_US") } else { vec![] };
+    let ko_voices = if say_ok { get_working_voices("ko_KR") } else { vec![] };
+    let en_voices = if say_ok { get_working_voices("en_US") } else { vec![] };
 
     serde_json::json!({
         "say_available": say_ok,
