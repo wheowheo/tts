@@ -350,56 +350,52 @@ function setupAudioPlayback(base64Audio, format) {
         bytes[i] = binaryStr.charCodeAt(i);
     }
 
-    // MP3인 경우 Blob URL로 재생 (Web Audio API 대신)
-    if (fmt === 'mp3') {
-        const blob = new Blob([bytes], { type: 'audio/mpeg' });
-        const url = URL.createObjectURL(blob);
-        const playBtn = document.getElementById('play-btn');
-        playBtn.disabled = false;
-        playBtn.onclick = () => {
-            if (currentSource) try { currentSource.pause(); } catch(e) {}
-            const audio = new Audio(url);
-            currentSource = audio;
-            audio.play();
-            playBtn.textContent = '재생 중...';
-            audio.onended = () => { playBtn.textContent = '재생'; };
-        };
-        document.getElementById('quality-summary').innerHTML =
-            `${fmt.toUpperCase()} | 신경망 TTS | <em>파형 분석은 WAV 형식에서만 가능합니다</em>`;
-        return;
-    }
+    const mimeType = fmt === 'mp3' ? 'audio/mpeg' : 'audio/wav';
+    const blob = new Blob([bytes], { type: mimeType });
+    const blobUrl = URL.createObjectURL(blob);
 
-    if (!audioContext) {
-        audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    }
-
-    audioContext.decodeAudioData(bytes.buffer.slice(0)).then(buffer => {
-        currentAudioBuffer = buffer;
-        lastAudioData = buffer.getChannelData(0);
-        const playBtn = document.getElementById('play-btn');
-        playBtn.disabled = false;
-        playBtn.onclick = playAudio;
-        drawWaveform(buffer);
-        showQualitySummary(lastAudioData);
-    }).catch(err => {
-        console.error('오디오 디코딩 실패:', err);
-        // 폴백: WAV 데이터에서 직접 파형 그리기
-        const view = new DataView(bytes.buffer);
-        const numSamples = (bytes.length - 44) / 2;
-        lastAudioData = new Float32Array(numSamples);
-        for (let i = 0; i < numSamples; i++) {
-            lastAudioData[i] = view.getInt16(44 + i * 2, true) / 32768;
+    // 재생 버튼 설정
+    const playBtn = document.getElementById('play-btn');
+    playBtn.disabled = false;
+    playBtn.onclick = () => {
+        if (currentSource) {
+            try { currentSource.pause(); } catch(e) {}
         }
-        drawWaveformFromBytes(bytes);
-        const playBtn = document.getElementById('play-btn');
-        playBtn.disabled = false;
-        playBtn.onclick = () => {
-            const blob = new Blob([bytes], { type: 'audio/wav' });
-            const url = URL.createObjectURL(blob);
-            const audio = new Audio(url);
-            audio.play();
-        };
-    });
+        const audio = new Audio(blobUrl);
+        currentSource = audio;
+        audio.play();
+        playBtn.textContent = '재생 중...';
+        audio.onended = () => { playBtn.textContent = '재생'; };
+    };
+
+    // WAV인 경우 파형 분석
+    if (fmt === 'wav' && bytes.length > 44) {
+        // data chunk 위치 찾기 (ffmpeg가 LIST chunk를 추가하므로 44 고정 불가)
+        let dataOffset = 44;
+        for (let i = 12; i < bytes.length - 8; i++) {
+            if (bytes[i] === 0x64 && bytes[i+1] === 0x61 && bytes[i+2] === 0x74 && bytes[i+3] === 0x61) { // 'data'
+                dataOffset = i + 8; // 'data' + size(4bytes)
+                break;
+            }
+        }
+        const view = new DataView(bytes.buffer);
+        const numSamples = Math.floor((bytes.length - dataOffset) / 2);
+        if (numSamples > 0) {
+            lastAudioData = new Float32Array(numSamples);
+            for (let i = 0; i < numSamples; i++) {
+                lastAudioData[i] = view.getInt16(dataOffset + i * 2, true) / 32768;
+            }
+            drawWaveformData(
+                document.getElementById('waveform-canvas').getContext('2d'),
+                lastAudioData,
+                document.getElementById('waveform-canvas').clientWidth,
+                document.getElementById('waveform-canvas').clientHeight
+            );
+            showQualitySummary(lastAudioData);
+        }
+    } else {
+        document.getElementById('quality-summary').innerHTML = `${fmt.toUpperCase()} | 파형 분석은 WAV에서만 가능`;
+    }
 }
 
 function playAudio() {
