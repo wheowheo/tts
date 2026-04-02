@@ -8,7 +8,7 @@ use tower_http::services::ServeDir;
 use tower_http::cors::CorsLayer;
 use tts_core::{
     PipelineInfo, PipelineResult, PipelineStage, SynthesizeRequest, SynthesizeResponse,
-    english, hangul, prosody, synthesis,
+    english, hangul, neural, prosody, synthesis,
 };
 
 #[derive(serde::Deserialize)]
@@ -183,13 +183,109 @@ fn base64_encode(data: &[u8]) -> String {
     result
 }
 
+// === 신경망 TTS API ===
+
+#[derive(serde::Deserialize)]
+struct NeuralRequest {
+    text: String,
+    language: Option<String>,
+    model_path: Option<String>,
+    config_path: Option<String>,
+}
+
+async fn neural_synthesize(Json(req): Json<NeuralRequest>) -> Json<serde_json::Value> {
+    let lang = req.language.as_deref().unwrap_or("ko");
+
+    let result = if let (Some(mp), Some(cp)) = (&req.model_path, &req.config_path) {
+        neural::synthesize_custom(&req.text, mp, cp)
+    } else {
+        neural::synthesize(&req.text, lang)
+    };
+
+    match result {
+        Ok(audio) => {
+            let b64 = base64_encode(&audio.wav_data);
+            Json(serde_json::json!({
+                "audio_base64": b64, "sample_rate": audio.sample_rate,
+                "engine": audio.engine, "format": "wav", "text": req.text,
+            }))
+        }
+        Err(e) => Json(serde_json::json!({ "error": e, "text": req.text })),
+    }
+}
+
+async fn get_engines() -> Json<serde_json::Value> {
+    Json(neural::check_engines())
+}
+
+#[derive(serde::Deserialize)]
+struct TrainingDataReq {
+    action: String, // "init", "status", "add"
+    dataset_dir: Option<String>,
+    text: Option<String>,
+    sample_id: Option<String>,
+    wav_base64: Option<String>,
+}
+
+async fn training_api(Json(req): Json<TrainingDataReq>) -> Json<serde_json::Value> {
+    let dir = req.dataset_dir.as_deref().unwrap_or("training_data");
+
+    match req.action.as_str() {
+        "init" => {
+            match neural::init_training_dataset(dir) {
+                Ok(msg) => Json(serde_json::json!({ "ok": true, "message": msg })),
+                Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
+            }
+        }
+        "status" => Json(neural::get_training_status(dir)),
+        "add" => {
+            let text = req.text.as_deref().unwrap_or("");
+            let id = req.sample_id.as_deref().unwrap_or("sample_0000");
+            if let Some(b64) = &req.wav_base64 {
+                // base64 디코딩
+                let wav = base64_decode(b64);
+                match neural::add_training_sample(dir, &wav, text, id) {
+                    Ok(msg) => Json(serde_json::json!({ "ok": true, "message": msg })),
+                    Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
+                }
+            } else {
+                Json(serde_json::json!({ "ok": false, "error": "wav_base64 필요" }))
+            }
+        }
+        _ => Json(serde_json::json!({ "ok": false, "error": "알 수 없는 action" })),
+    }
+}
+
+fn base64_decode(data: &str) -> Vec<u8> {
+    let mut result = Vec::new();
+    let chars: Vec<u8> = data.bytes().filter(|&b| b != b'\n' && b != b'\r' && b != b'=').collect();
+    let lookup = |c: u8| -> u8 {
+        match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62, b'/' => 63, _ => 0,
+        }
+    };
+    for chunk in chars.chunks(4) {
+        let n = chunk.iter().enumerate().fold(0u32, |acc, (i, &c)| acc | ((lookup(c) as u32) << (18 - i * 6)));
+        result.push((n >> 16) as u8);
+        if chunk.len() > 2 { result.push((n >> 8) as u8); }
+        if chunk.len() > 3 { result.push(n as u8); }
+    }
+    result
+}
+
 #[tokio::main]
 async fn main() {
     let api_routes = Router::new()
         .route("/pipeline", get(get_pipeline))
         .route("/analyze", post(analyze))
         .route("/prosody", post(generate_prosody))
-        .route("/synthesize", post(synthesize));
+        .route("/synthesize", post(synthesize))
+        .route("/neural-synthesize", post(neural_synthesize))
+        .route("/engines", get(get_engines))
+        .route("/training", post(training_api));
 
     let app = Router::new()
         .nest("/api", api_routes)

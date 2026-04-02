@@ -43,14 +43,31 @@ async function synthesize() {
     btn.disabled = true;
     btn.textContent = '생성 중...';
 
-    try {
-        const res = await fetch(`${API_BASE}/api/synthesize`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text, language: lang, params: getTuningParams() }),
-        });
+    const engine = document.getElementById('engine-select')?.value || 'formant';
 
-        const data = await res.json();
+    try {
+        let data;
+        if (engine === 'neural') {
+            const res = await fetch(`${API_BASE}/api/neural-synthesize`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text, language: lang }),
+            });
+            data = await res.json();
+            if (data.error) {
+                alert('신경망 TTS 오류:\n' + data.error);
+                btn.disabled = false; btn.textContent = '합성';
+                return;
+            }
+            data.pipeline = [];
+        } else {
+            const res = await fetch(`${API_BASE}/api/synthesize`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text, language: lang, params: getTuningParams() }),
+            });
+            data = await res.json();
+        }
         renderResults(data);
 
         // Step 2, 3 표시
@@ -822,6 +839,53 @@ function switchDetail(mode) {
     }
 }
 
+// === 학습 데이터 API ===
+async function initTraining() {
+    const res = await fetch(`${API_BASE}/api/training`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'init' }),
+    });
+    const d = await res.json();
+    document.getElementById('training-status').textContent = d.message || d.error;
+}
+
+async function checkTrainingStatus() {
+    const res = await fetch(`${API_BASE}/api/training`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'status' }),
+    });
+    const d = await res.json();
+    const el = document.getElementById('training-status');
+    el.innerHTML = `
+        샘플 수: <strong>${d.sample_count}</strong>개 (최소 ${d.min_samples}, 권장 ${d.recommended_samples})
+        | 모델 학습됨: ${d.model_trained ? '✅' : '❌'}
+        | 학습 가능: ${d.ready_to_train ? '✅' : '❌ (최소 100개 필요)'}
+    `;
+}
+
+// 엔진 상태 확인
+async function checkEngines() {
+    try {
+        const res = await fetch(`${API_BASE}/api/engines`);
+        const d = await res.json();
+        const el = document.getElementById('engine-status');
+        if (el) {
+            if (d.coqui_tts_installed) {
+                el.innerHTML = `<span style="color:var(--success)">Coqui VITS 준비됨</span> | 한국어: ${d.korean_ready ? '✅' : '❌'} 영어: ${d.english_ready ? '✅' : '❌'} | 학습: ${d.training?.supported ? '✅' : '❌'}`;
+                el.style.display = 'block';
+            } else {
+                el.innerHTML = `<span style="color:var(--primary)">신경망 TTS 미설치 — bash setup_neural.sh 실행 필요</span>`;
+            }
+            document.getElementById('engine-select')?.addEventListener('change', () => {
+                el.style.display = document.getElementById('engine-select').value === 'neural' ? 'block' : 'none';
+            });
+        }
+    } catch(e) {}
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     loadPipeline();
+    checkEngines();
 });

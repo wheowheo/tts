@@ -25,8 +25,13 @@
                     <option value="ko" selected>한국어</option>
                     <option value="en">English</option>
                 </select>
+                <select id="engine-select">
+                    <option value="formant">포먼트 합성 (학습용)</option>
+                    <option value="neural">신경망 VITS (고품질)</option>
+                </select>
                 <button id="synthesize-btn" onclick="synthesize()">합성</button>
             </div>
+            <div id="engine-status" class="engine-status"></div>
         </section>
 
         <!-- Step 2: 듣기 + 품질 확인 -->
@@ -101,7 +106,29 @@
             </div>
         </section>
 
-        <!-- Step 4: 상세 분석 (접기 가능) -->
+        <!-- Step 4: 학습 데이터 -->
+        <details class="detail-section" id="training-section">
+            <summary>학습 데이터 관리 — 커스텀 음성 모델 학습</summary>
+            <div class="detail-content">
+                <p class="step-desc">나만의 목소리로 TTS 모델을 학습할 수 있습니다. WAV 파일(22050Hz, mono)과 텍스트를 준비하세요.</p>
+                <div class="training-controls">
+                    <button onclick="initTraining()">학습 폴더 초기화</button>
+                    <button onclick="checkTrainingStatus()">상태 확인</button>
+                </div>
+                <div id="training-status" class="training-status"></div>
+                <div class="training-info">
+                    <h3>학습 데이터 준비 방법</h3>
+                    <ol>
+                        <li><code>training_data/wavs/</code>에 WAV 파일 배치 (22050Hz, mono, 16-bit, 2~10초)</li>
+                        <li><code>training_data/metadata.csv</code>에 파일명|텍스트|텍스트 형식으로 기록</li>
+                        <li>최소 50개, 권장 500개 이상 (약 30분 이상)</li>
+                        <li>학습 실행: <code>source .venv/bin/activate && python train.py</code></li>
+                    </ol>
+                </div>
+            </div>
+        </details>
+
+        <!-- Step 5: 상세 분석 (접기 가능) -->
         <details class="detail-section" id="detail-section">
             <summary>상세 분석 (파이프라인, 스펙트로그램, 품질 검증)</summary>
 

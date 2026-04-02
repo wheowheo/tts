@@ -112,6 +112,17 @@ button:hover { opacity: 0.85; }
 button:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn-secondary { background: var(--surface-alt); border: 1px solid var(--border); }
 
+.engine-status { margin-top: 0.4rem; font-size: 0.8rem; padding: 0.3rem 0.5rem; background: var(--bg); border-radius: 6px; display: none; }
+
+.training-controls { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }
+.training-controls button { font-size: 0.85rem; }
+.training-status { font-size: 0.85rem; margin-bottom: 0.75rem; padding: 0.5rem; background: var(--bg); border-radius: 6px; }
+.training-info { font-size: 0.8rem; color: var(--text-dim); }
+.training-info h3 { font-size: 0.9rem; color: var(--text); margin-bottom: 0.5rem; }
+.training-info ol { padding-left: 1.5rem; }
+.training-info li { margin-bottom: 0.3rem; }
+.training-info code { background: var(--surface-alt); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.8rem; }
+
 /* Step 2: Listen */
 .listen-row {
     display: flex;

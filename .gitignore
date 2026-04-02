@@ -4,3 +4,10 @@ Cargo.lock
 *.swo
 .DS_Store
 test_output.wav
+test_*.wav
+.venv/
+models/
+training_data/
+trained_models/
+phoneme_cache/
+__pycache__/

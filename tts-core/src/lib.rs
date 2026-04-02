@@ -1,5 +1,6 @@
 pub mod english;
 pub mod hangul;
+pub mod neural;
 pub mod prosody;
 pub mod synthesis;
 pub mod types;
