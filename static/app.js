@@ -138,7 +138,8 @@ function renderResults(data) {
             isPlayingA = true;
         }
         currentAudioBase64 = data.audio_base64;
-        setupAudioPlayback(data.audio_base64);
+        const fmt = data.format || 'wav';
+        setupAudioPlayback(data.audio_base64, fmt);
     } else {
         drawEmptyWaveform();
     }
@@ -340,11 +341,31 @@ let currentAudioBuffer = null;
 let audioContext = null;
 let currentSource = null;
 
-function setupAudioPlayback(base64Audio) {
+function setupAudioPlayback(base64Audio, format) {
+    const fmt = format || 'wav';
     const binaryStr = atob(base64Audio);
     const bytes = new Uint8Array(binaryStr.length);
     for (let i = 0; i < binaryStr.length; i++) {
         bytes[i] = binaryStr.charCodeAt(i);
+    }
+
+    // MP3인 경우 Blob URL로 재생 (Web Audio API 대신)
+    if (fmt === 'mp3') {
+        const blob = new Blob([bytes], { type: 'audio/mpeg' });
+        const url = URL.createObjectURL(blob);
+        const playBtn = document.getElementById('play-btn');
+        playBtn.disabled = false;
+        playBtn.onclick = () => {
+            if (currentSource) try { currentSource.pause(); } catch(e) {}
+            const audio = new Audio(url);
+            currentSource = audio;
+            audio.play();
+            playBtn.textContent = '재생 중...';
+            audio.onended = () => { playBtn.textContent = '재생'; };
+        };
+        document.getElementById('quality-summary').innerHTML =
+            `${fmt.toUpperCase()} | 신경망 TTS | <em>파형 분석은 WAV 형식에서만 가능합니다</em>`;
+        return;
     }
 
     if (!audioContext) {

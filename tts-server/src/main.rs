@@ -196,12 +196,14 @@ async fn neural_synthesize(Json(req): Json<SynthesizeRequest>) -> Result<Json<se
     match result {
         Ok(audio) => {
             let audio_base64 = base64_encode(&audio.wav_data);
+            let is_mp3 = audio.engine.ends_with("-mp3");
             Ok(Json(serde_json::json!({
                 "text": req.text,
                 "audio_base64": audio_base64,
                 "sample_rate": audio.sample_rate,
                 "engine": audio.engine,
                 "language": lang,
+                "format": if is_mp3 { "mp3" } else { "wav" },
             })))
         }
         Err(msg) => {
