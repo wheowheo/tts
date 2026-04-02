@@ -299,12 +299,55 @@ fn synthesize_consonant(phoneme: &str, duration_ms: f32, pitch_hz: f32, amplitud
     samples
 }
 
-/// 모음 합성: 포먼트 합성 (LF 글로탈 소스 + 지터/시머 + 스펙트럼 기울기)
-fn synthesize_vowel(phoneme: &str, duration_ms: f32, pitch_hz: f32, amplitude: f32) -> Vec<f64> {
+/// 코사인 보간 (0~1 사이에서 부드러운 전이)
+fn cosine_interp(a: f64, b: f64, t: f64) -> f64 {
+    let ct = (1.0 - (t * std::f64::consts::PI).cos()) * 0.5;
+    a * (1.0 - ct) + b * ct
+}
+
+/// 포먼트 보간: 전이 구간에서 이전/다음 포먼트 사이를 코사인 보간
+fn interpolate_formants(base: &FormantParams, target: &FormantParams, t: f64) -> FormantParams {
+    FormantParams {
+        f1: cosine_interp(base.f1, target.f1, t),
+        f2: cosine_interp(base.f2, target.f2, t),
+        f3: cosine_interp(base.f3, target.f3, t),
+        bw1: cosine_interp(base.bw1, target.bw1, t),
+        bw2: cosine_interp(base.bw2, target.bw2, t),
+        bw3: cosine_interp(base.bw3, target.bw3, t),
+    }
+}
+
+/// 전이 구간의 넓은 대역폭 (포먼트 전이 중 공명이 불안정)
+fn transition_bandwidth(base: &FormantParams) -> FormantParams {
+    FormantParams {
+        bw1: base.bw1 * 1.8,
+        bw2: base.bw2 * 1.8,
+        bw3: base.bw3 * 1.5,
+        ..*base
+    }
+}
+
+/// 모음 합성: 포먼트 합성 (LF 글로탈 + 지터/시머 + 스펙트럼 기울기 + 포먼트 전이)
+fn synthesize_vowel_with_context(
+    phoneme: &str,
+    duration_ms: f32,
+    pitch_hz: f32,
+    amplitude: f32,
+    prev_formants: Option<&FormantParams>,
+    next_formants: Option<&FormantParams>,
+) -> Vec<f64> {
     let num_samples = (duration_ms as f64 / 1000.0 * SAMPLE_RATE as f64) as usize;
-    let formants = vowel_formants(phoneme);
+    let target_formants = vowel_formants(phoneme);
     let f0 = pitch_hz as f64;
     let amp = amplitude as f64;
+
+    // 전이 구간 길이 (샘플 수)
+    let onset_ms = if prev_formants.is_some() { 30.0 } else { 0.0 };  // 시작 전이
+    let offset_ms = if next_formants.is_some() { 25.0 } else { 0.0 }; // 끝 전이
+    let onset_samples = (onset_ms / 1000.0 * SAMPLE_RATE as f64) as usize;
+    let offset_samples = (offset_ms / 1000.0 * SAMPLE_RATE as f64) as usize;
+    let onset_end = onset_samples.min(num_samples / 3); // 최대 1/3까지
+    let offset_start = num_samples.saturating_sub(offset_samples.min(num_samples / 3));
 
     let mut samples = Vec::with_capacity(num_samples);
     let mut phase: f64 = 0.0;
@@ -312,9 +355,8 @@ fn synthesize_vowel(phoneme: &str, duration_ms: f32, pitch_hz: f32, amplitude: f
     let mut res1 = ResonatorState::new();
     let mut res2 = ResonatorState::new();
     let mut res3 = ResonatorState::new();
-    let mut tilt = LowPassState::new(0.35); // 스펙트럼 기울기: ~-12dB/oct
+    let mut tilt = LowPassState::new(0.35);
 
-    // 지터/시머는 글로탈 주기 단위로 갱신
     let mut jitter_val = 0.0_f64;
     let mut shimmer_val = 0.0_f64;
     let mut prev_phase = 0.0_f64;
@@ -322,22 +364,45 @@ fn synthesize_vowel(phoneme: &str, duration_ms: f32, pitch_hz: f32, amplitude: f
     for i in 0..num_samples {
         let env = envelope(i, num_samples, 0.05, 0.1);
 
-        // 글로탈 주기 경계 감지 → 지터/시머 갱신
+        // 글로탈 주기 경계 → 지터/시머 갱신
         let cur_cycle = phase.floor();
         if cur_cycle > prev_phase.floor() {
-            jitter_val = rng.next_f64() * 0.015;   // ±1.5% 피치 변동
-            shimmer_val = rng.next_f64() * 0.03;    // ±3% 진폭 변동
+            jitter_val = rng.next_f64() * 0.015;
+            shimmer_val = rng.next_f64() * 0.03;
         }
         prev_phase = phase;
 
-        // LF 글로탈 소스 + 기식 노이즈
+        // 포먼트 전이 계산
+        let formants = if i < onset_end && onset_end > 0 {
+            // 시작 전이: 이전 음소 → 현재 음소
+            let t = i as f64 / onset_end as f64;
+            match prev_formants {
+                Some(pf) => {
+                    let from = transition_bandwidth(pf);
+                    interpolate_formants(&from, &target_formants, t)
+                }
+                None => target_formants,
+            }
+        } else if i >= offset_start && offset_start < num_samples {
+            // 끝 전이: 현재 음소 → 다음 음소
+            let t = (i - offset_start) as f64 / (num_samples - offset_start) as f64;
+            match next_formants {
+                Some(nf) => {
+                    let to = transition_bandwidth(nf);
+                    interpolate_formants(&target_formants, &to, t)
+                }
+                None => target_formants,
+            }
+        } else {
+            target_formants
+        };
+
+        // LF 글로탈 소스
         let source = glottal_pulse_lf(phase) * (1.0 + shimmer_val)
             + aspiration_noise(&mut rng);
-
-        // 스펙트럼 기울기 적용 (고주파 감쇠)
         let source_tilted = tilt.process(source);
 
-        // 포먼트 필터 적용 (병렬 합성)
+        // 포먼트 필터 (보간된 주파수/대역폭 적용)
         let f1_out = res1.process(source_tilted, formants.f1, formants.bw1, SAMPLE_RATE as f64);
         let f2_out = res2.process(source_tilted, formants.f2, formants.bw2, SAMPLE_RATE as f64);
         let f3_out = res3.process(source_tilted, formants.f3, formants.bw3, SAMPLE_RATE as f64);
@@ -345,11 +410,16 @@ fn synthesize_vowel(phoneme: &str, duration_ms: f32, pitch_hz: f32, amplitude: f
         let sample = (f1_out * 1.0 + f2_out * 0.7 + f3_out * 0.3) * amp * env;
         samples.push(sample);
 
-        // 피치 진행 (지터 적용)
         phase += (f0 * (1.0 + jitter_val)) / SAMPLE_RATE as f64;
     }
 
     samples
+}
+
+/// 단독 모음 합성 (테스트/하위 호환용)
+#[cfg(test)]
+fn synthesize_vowel(phoneme: &str, duration_ms: f32, pitch_hz: f32, amplitude: f32) -> Vec<f64> {
+    synthesize_vowel_with_context(phoneme, duration_ms, pitch_hz, amplitude, None, None)
 }
 
 /// ADSR 엔벨로프 (attack/release 비율)
@@ -364,15 +434,45 @@ fn envelope(sample_idx: usize, total_samples: usize, attack_ratio: f64, release_
     }
 }
 
-/// 전체 운율 시퀀스를 PCM으로 합성
+/// 음소 타입 조합에 따른 크로스페이드 길이 (ms)
+fn crossfade_ms(prev_type: &PhonemeType, cur_type: &PhonemeType) -> f64 {
+    match (prev_type, cur_type) {
+        (PhonemeType::Consonant, PhonemeType::Vowel) => 20.0,   // C→V
+        (PhonemeType::Vowel, PhonemeType::Consonant) => 15.0,   // V→C
+        (PhonemeType::Vowel, PhonemeType::Vowel) => 40.0,       // V→V (가장 긴 전이)
+        (PhonemeType::Consonant, PhonemeType::Consonant) => 10.0,// C→C
+        _ => 5.0,
+    }
+}
+
+/// 이전 음소에서 모음 포먼트 추출 (포먼트 전이 소스)
+fn get_vowel_formants_opt(phoneme: &str, ptype: &PhonemeType) -> Option<FormantParams> {
+    match ptype {
+        PhonemeType::Vowel => Some(vowel_formants(phoneme)),
+        _ => None,
+    }
+}
+
+/// 전체 운율 시퀀스를 PCM으로 합성 (포먼트 전이 + 타입별 크로스페이드)
 pub fn synthesize_all(prosody_units: &[ProsodyUnit]) -> Vec<i16> {
     let mut all_samples: Vec<f64> = Vec::new();
-    let fade_len = (SAMPLE_RATE as f64 * 0.005) as usize; // 5ms 크로스페이드
+    let mut prev_type = PhonemeType::Silence;
 
-    for unit in prosody_units {
+    for (idx, unit) in prosody_units.iter().enumerate() {
         let segment: Vec<f64> = match unit.phoneme_type {
             PhonemeType::Vowel => {
-                synthesize_vowel(&unit.phoneme, unit.duration_ms, unit.pitch_hz, unit.amplitude)
+                // 이전/다음 모음 포먼트 조회 (포먼트 전이용)
+                let prev_f = if idx > 0 {
+                    get_vowel_formants_opt(&prosody_units[idx - 1].phoneme, &prosody_units[idx - 1].phoneme_type)
+                } else { None };
+                let next_f = if idx + 1 < prosody_units.len() {
+                    get_vowel_formants_opt(&prosody_units[idx + 1].phoneme, &prosody_units[idx + 1].phoneme_type)
+                } else { None };
+
+                synthesize_vowel_with_context(
+                    &unit.phoneme, unit.duration_ms, unit.pitch_hz, unit.amplitude,
+                    prev_f.as_ref(), next_f.as_ref(),
+                )
             }
             PhonemeType::Consonant => {
                 synthesize_consonant(&unit.phoneme, unit.duration_ms, unit.pitch_hz, unit.amplitude)
@@ -383,19 +483,26 @@ pub fn synthesize_all(prosody_units: &[ProsodyUnit]) -> Vec<i16> {
             }
         };
 
-        // 크로스페이드 적용
+        // 타입별 크로스페이드 적용
+        let fade_ms = crossfade_ms(&prev_type, &unit.phoneme_type);
+        let fade_len = (SAMPLE_RATE as f64 * fade_ms / 1000.0) as usize;
+
         if !all_samples.is_empty() && !segment.is_empty() && fade_len > 0 {
             let overlap = fade_len.min(all_samples.len()).min(segment.len());
             let start = all_samples.len() - overlap;
             for j in 0..overlap {
-                let fade_out = 1.0 - (j as f64 / overlap as f64);
-                let fade_in = j as f64 / overlap as f64;
+                // 코사인 크로스페이드 (선형보다 부드러움)
+                let t = j as f64 / overlap as f64;
+                let fade_in = (1.0 - (t * std::f64::consts::PI + std::f64::consts::PI).cos()) * 0.5;
+                let fade_out = 1.0 - fade_in;
                 all_samples[start + j] = all_samples[start + j] * fade_out + segment[j] * fade_in;
             }
             all_samples.extend_from_slice(&segment[overlap..]);
         } else {
             all_samples.extend_from_slice(&segment);
         }
+
+        prev_type = unit.phoneme_type.clone();
     }
 
     // 정규화 및 i16 변환
