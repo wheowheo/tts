@@ -51,7 +51,7 @@ async function synthesize() {
         const res = await fetch(`${API_BASE}/api/synthesize`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text, language: lang }),
+            body: JSON.stringify({ text, language: lang, params: getTuningParams() }),
         });
 
         const data = await res.json();
@@ -114,6 +114,16 @@ function renderResults(data) {
     const audioSection = document.getElementById('audio-section');
     audioSection.style.display = 'block';
     if (data.audio_base64) {
+        // A/B 비교를 위해 이전 오디오 저장
+        if (currentAudioBase64) {
+            previousAudioBase64 = currentAudioBase64;
+            const abBtn = document.getElementById('ab-btn');
+            abBtn.style.display = 'inline-block';
+            abBtn.disabled = false;
+            abBtn.textContent = 'A/B: 현재 (A)';
+            isPlayingA = true;
+        }
+        currentAudioBase64 = data.audio_base64;
         setupAudioPlayback(data.audio_base64);
     } else {
         drawEmptyWaveform();
@@ -446,4 +456,84 @@ function drawWaveformData(ctx, data, w, h) {
     ctx.fillText(`${(duration / 2).toFixed(2)}s`, w / 2, h - 4);
 }
 
-document.addEventListener('DOMContentLoaded', loadPipeline);
+// === 튜닝 기능 ===
+
+function getTuningParams() {
+    return {
+        base_pitch_hz: parseFloat(document.getElementById('pitch-slider').value),
+        speed_factor: parseFloat(document.getElementById('speed-slider').value),
+        volume: parseFloat(document.getElementById('volume-slider').value),
+    };
+}
+
+function updateTuningValue(param) {
+    const slider = document.getElementById(`${param}-slider`);
+    const display = document.getElementById(`${param}-value`);
+    display.textContent = slider.value;
+}
+
+const PRESETS = {
+    default: { base_pitch_hz: 150, speed_factor: 1.0, volume: 1.0 },
+    high:    { base_pitch_hz: 220, speed_factor: 1.0, volume: 1.0 },
+    low:     { base_pitch_hz: 100, speed_factor: 1.0, volume: 1.0 },
+    fast:    { base_pitch_hz: 150, speed_factor: 1.5, volume: 1.0 },
+    slow:    { base_pitch_hz: 150, speed_factor: 0.7, volume: 1.0 },
+};
+
+function applyPreset(name) {
+    const preset = PRESETS[name];
+    if (!preset) return;
+    document.getElementById('pitch-slider').value = preset.base_pitch_hz;
+    document.getElementById('speed-slider').value = preset.speed_factor;
+    document.getElementById('volume-slider').value = preset.volume;
+    updateTuningValue('pitch');
+    updateTuningValue('speed');
+    updateTuningValue('volume');
+}
+
+function saveCustomPreset() {
+    const params = getTuningParams();
+    localStorage.setItem('tts-custom-preset', JSON.stringify(params));
+    document.getElementById('load-preset-btn').disabled = false;
+}
+
+function loadCustomPreset() {
+    const saved = localStorage.getItem('tts-custom-preset');
+    if (!saved) return;
+    const params = JSON.parse(saved);
+    document.getElementById('pitch-slider').value = params.base_pitch_hz;
+    document.getElementById('speed-slider').value = params.speed_factor;
+    document.getElementById('volume-slider').value = params.volume;
+    updateTuningValue('pitch');
+    updateTuningValue('speed');
+    updateTuningValue('volume');
+}
+
+// A/B 비교용 이전 오디오 저장
+let previousAudioBase64 = null;
+let currentAudioBase64 = null;
+let isPlayingA = true;
+
+function toggleABCompare() {
+    if (!previousAudioBase64 || !currentAudioBase64) return;
+    isPlayingA = !isPlayingA;
+    const btn = document.getElementById('ab-btn');
+    if (isPlayingA) {
+        btn.textContent = 'A/B: 현재 (A)';
+        setupAudioPlayback(currentAudioBase64);
+    } else {
+        btn.textContent = 'A/B: 이전 (B)';
+        setupAudioPlayback(previousAudioBase64);
+    }
+}
+
+// synthesize의 결과 저장을 위해 원래 renderResults를 래핑
+const _originalSetupAudio = setupAudioPlayback;
+
+document.addEventListener('DOMContentLoaded', () => {
+    loadPipeline();
+    // 저장된 프리셋이 있으면 로드 버튼 활성화
+    if (localStorage.getItem('tts-custom-preset')) {
+        document.getElementById('load-preset-btn').disabled = false;
+    }
+});

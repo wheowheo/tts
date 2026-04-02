@@ -62,7 +62,7 @@ async fn synthesize(Json(req): Json<SynthesizeRequest>) -> Result<Json<Synthesiz
     let normalized = hangul::normalize_text(&req.text);
     let jamo = hangul::decompose_text(&normalized);
     let phonemes = hangul::jamo_to_phonemes(&jamo);
-    let params = prosody::ProsodyParams::default();
+    let params = req.params.unwrap_or_default();
     let mut prosody_units = prosody::generate_prosody(&phonemes, &params);
     prosody::insert_pauses(&mut prosody_units, &normalized);
 

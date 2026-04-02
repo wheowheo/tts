@@ -111,6 +111,67 @@ button {
 button:hover { opacity: 0.85; }
 button:disabled { opacity: 0.4; cursor: not-allowed; }
 
+.btn-secondary {
+    background: var(--surface-alt);
+    border: 1px solid var(--border);
+}
+
+/* Tuning Section */
+.tuning-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.tuning-group {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem;
+}
+
+.tuning-group label {
+    display: block;
+    font-size: 0.85rem;
+    margin-bottom: 0.5rem;
+}
+
+.tuning-value {
+    color: var(--primary);
+    font-weight: 700;
+    font-size: 1.1rem;
+}
+
+.tuning-group input[type="range"] {
+    width: 100%;
+    accent-color: var(--primary);
+}
+
+.range-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    margin-top: 0.25rem;
+}
+
+.preset-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.preset-controls button {
+    padding: 0.4rem 0.8rem;
+    font-size: 0.8rem;
+}
+
+.audio-buttons {
+    display: flex;
+    gap: 0.5rem;
+}
+
 /* Pipeline Section */
 .pipeline-container {
     display: flex;

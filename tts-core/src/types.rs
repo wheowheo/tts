@@ -25,6 +25,7 @@ pub struct PipelineResult {
 pub struct SynthesizeRequest {
     pub text: String,
     pub language: Option<String>,
+    pub params: Option<crate::prosody::ProsodyParams>,
 }
 
 /// 합성 응답 (파이프라인 전체 결과 포함)

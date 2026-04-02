@@ -27,10 +27,45 @@
             </div>
         </section>
 
+        <section class="tuning-section">
+            <h2>튜닝 파라미터</h2>
+            <div class="tuning-grid">
+                <div class="tuning-group">
+                    <label>기본 피치 (Hz)
+                        <span class="tuning-value" id="pitch-value">150</span>
+                    </label>
+                    <input type="range" id="pitch-slider" min="80" max="300" value="150" step="5" oninput="updateTuningValue('pitch')">
+                    <div class="range-labels"><span>80</span><span>300</span></div>
+                </div>
+                <div class="tuning-group">
+                    <label>속도
+                        <span class="tuning-value" id="speed-value">1.0</span>x
+                    </label>
+                    <input type="range" id="speed-slider" min="0.5" max="2.0" value="1.0" step="0.1" oninput="updateTuningValue('speed')">
+                    <div class="range-labels"><span>0.5x</span><span>2.0x</span></div>
+                </div>
+                <div class="tuning-group">
+                    <label>볼륨
+                        <span class="tuning-value" id="volume-value">1.0</span>
+                    </label>
+                    <input type="range" id="volume-slider" min="0.1" max="2.0" value="1.0" step="0.1" oninput="updateTuningValue('volume')">
+                    <div class="range-labels"><span>0.1</span><span>2.0</span></div>
+                </div>
+            </div>
+            <div class="preset-controls">
+                <button onclick="applyPreset('default')">기본값</button>
+                <button onclick="applyPreset('high')">높은 목소리</button>
+                <button onclick="applyPreset('low')">낮은 목소리</button>
+                <button onclick="applyPreset('fast')">빠르게</button>
+                <button onclick="applyPreset('slow')">느리게</button>
+                <button onclick="saveCustomPreset()" class="btn-secondary">현재 값 저장</button>
+                <button onclick="loadCustomPreset()" class="btn-secondary" id="load-preset-btn" disabled>저장된 값 불러오기</button>
+            </div>
+        </section>
+
         <section class="pipeline-section">
             <h2>파이프라인</h2>
             <div id="pipeline-stages" class="pipeline-container">
-                <!-- 파이프라인 단계가 여기에 동적으로 생성됩니다 -->
             </div>
         </section>
 
@@ -42,7 +77,10 @@
         <section class="audio-section" id="audio-section" style="display:none;">
             <h2>오디오 출력</h2>
             <div class="audio-controls">
-                <button id="play-btn" disabled>재생</button>
+                <div class="audio-buttons">
+                    <button id="play-btn" disabled>재생</button>
+                    <button id="ab-btn" onclick="toggleABCompare()" disabled style="display:none;">A/B 비교</button>
+                </div>
                 <canvas id="waveform-canvas" width="800" height="200"></canvas>
             </div>
         </section>
