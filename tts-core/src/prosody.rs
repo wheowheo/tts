@@ -63,17 +63,17 @@ fn natural_amplitude(ptype: &PhonemeType, phoneme: &str) -> f32 {
     match ptype {
         PhonemeType::Vowel => 1.0,
         PhonemeType::Consonant => match phoneme {
-            "n" | "m" | "ng" => 0.7,           // 비음: 모음보다 약간 약함
-            "r" | "l" => 0.65,                  // 유음
-            "w" | "y" => 0.8,                   // 반모음
-            "s" | "ss" | "sh" => 0.5,           // 마찰음
-            "h" | "hh" => 0.35,                 // ㅎ: 가장 약함
-            "f" | "v" | "z" => 0.45,            // 영어 마찰음
-            "k" | "t" | "p" | "g" | "d" | "b" => 0.6, // 파열음
-            "kk" | "tt" | "pp" => 0.7,          // 경음: 조금 더 강함
-            "kh" | "th" | "ph" => 0.55,         // 격음
-            "ch" | "j" | "jj" | "jh" => 0.55,   // 파찰음
-            _ => 0.5,
+            "n" | "m" | "ng" => 0.85,
+            "r" | "l" => 0.80,
+            "w" | "y" => 0.90,
+            "s" | "ss" | "sh" => 0.75,
+            "h" | "hh" => 0.70,
+            "f" | "v" | "z" => 0.70,
+            "k" | "t" | "p" | "g" | "d" | "b" => 0.80,
+            "kk" | "tt" | "pp" => 0.85,
+            "kh" | "th" | "ph" => 0.75,
+            "ch" | "j" | "jj" | "jh" => 0.75,
+            _ => 0.75,
         },
         PhonemeType::Pause | PhonemeType::Silence => 0.0,
     }

@@ -162,7 +162,7 @@ fn voiced_consonant(num_samples: usize, pitch_hz: f32, amplitude: f32,
                     res_freq: f64, res_bw: f64, seed: u32,
                     attack: f64, release: f64) -> Vec<f64> {
     let f0 = pitch_hz as f64;
-    let amp = amplitude as f64 * 0.3;
+    let amp = amplitude as f64 * 0.8;
     let mut samples = Vec::with_capacity(num_samples);
     let mut phase: f64 = 0.0;
     let mut rng = Rng::new(seed);
@@ -181,7 +181,7 @@ fn voiced_consonant(num_samples: usize, pitch_hz: f32, amplitude: f32,
         let glottal = glottal_pulse_lf(phase) * (1.0 + shimmer_val);
         let tilted = tilt.process(glottal);
         let out = res.process(tilted, res_freq, res_bw, SAMPLE_RATE as f64);
-        samples.push(out * amp * env * 2.0);
+        samples.push((tilted * 0.3 + out * 3.0) * amp * env);
         phase += (f0 * (1.0 + jitter_val)) / SAMPLE_RATE as f64;
     }
     samples
@@ -200,16 +200,13 @@ fn fricative_band(phoneme: &str) -> (f64, f64) {
     }
 }
 
-/// 파열음 VOT(Voice Onset Time) ms
+/// 파열음 VOT(Voice Onset Time) ms — 음소 전체 길이의 비율로
 fn plosive_vot_ms(phoneme: &str) -> f64 {
     match phoneme {
-        // 한국어 평음: 중간 VOT
-        "k" | "t" | "p" | "g" | "d" | "b" => 30.0,
-        // 한국어 격음: 긴 VOT + 기식
-        "kh" | "th" | "ph"                 => 70.0,
-        // 한국어 경음: 짧은 VOT + 긴장
-        "kk" | "tt" | "pp"                 => 15.0,
-        _                                   => 30.0,
+        "k" | "t" | "p" | "g" | "d" | "b" => 15.0,
+        "kh" | "th" | "ph"                 => 35.0,
+        "kk" | "tt" | "pp"                 => 8.0,
+        _                                   => 15.0,
     }
 }
 
@@ -228,63 +225,66 @@ fn synthesize_consonant(phoneme: &str, duration_ms: f32, pitch_hz: f32, amplitud
     let num_samples = (duration_ms as f64 / 1000.0 * SAMPLE_RATE as f64) as usize;
     let mut samples = Vec::with_capacity(num_samples);
     let mut rng = Rng::new(12345);
-    let amp = amplitude as f64 * 0.3;
+    let amp = amplitude as f64 * 0.8;
 
     match phoneme {
-        // 마찰음: 밴드패스 필터된 노이즈 (각 마찰음마다 다른 스펙트럼)
+        // 마찰음: 밴드패스 + 원본 노이즈 블렌드 (볼륨 확보)
         "s" | "ss" | "h" | "hh" | "f" | "v" | "z" | "sh" | "sh-n" => {
             let (center, bw) = fricative_band(phoneme);
             let mut bp = ResonatorState::new();
             let gain = match phoneme {
-                "ss" => 1.3, // 경음은 더 강함
-                "h" | "hh" => 0.7, // ㅎ은 부드러움
+                "ss" => 1.3,
                 _ => 1.0,
             };
             for i in 0..num_samples {
                 let env = envelope(i, num_samples, 0.08, 0.12);
                 let noise = rng.next_f64();
                 let filtered = bp.process(noise, center, bw, SAMPLE_RATE as f64);
-                samples.push(filtered * amp * env * gain);
+                // 밴드패스 출력 + 원본 노이즈 블렌드 (볼륨 확보)
+                let mixed = filtered * 5.0 + noise * 0.15;
+                samples.push(mixed * amp * env * gain);
             }
         }
-        // 파열음: VOT 차별화 (평음/격음/경음)
+        // 파열음: burst → VOT → 잔여 기류 (무음 없음)
         "k" | "kk" | "kh" | "g" | "t" | "tt" | "th" | "d" | "p" | "pp" | "ph" | "b" => {
             let vot = plosive_vot_ms(phoneme);
+            let burst_ms = 4.0;
+            let burst_samples = (burst_ms / 1000.0 * SAMPLE_RATE as f64) as usize;
             let vot_samples = (vot / 1000.0 * SAMPLE_RATE as f64) as usize;
-            let burst_samples = (5.0 / 1000.0 * SAMPLE_RATE as f64) as usize; // 5ms 버스트
             let is_aspirated = matches!(phoneme, "kh" | "th" | "ph");
             let is_tense = matches!(phoneme, "kk" | "tt" | "pp");
 
             let mut bp = ResonatorState::new();
             let burst_freq = match phoneme {
-                "k" | "kk" | "kh" | "g" => 1500.0,  // 연구개
-                "t" | "tt" | "th" | "d" => 3000.0,  // 치경
-                "p" | "pp" | "ph" | "b" => 800.0,   // 양순
+                "k" | "kk" | "kh" | "g" => 1500.0,
+                "t" | "tt" | "th" | "d" => 3000.0,
+                "p" | "pp" | "ph" | "b" => 800.0,
                 _ => 2000.0,
             };
 
             for i in 0..num_samples {
                 if i < burst_samples {
-                    // 버스트: 짧고 강한 노이즈
-                    let env = envelope(i, burst_samples, 0.1, 0.6);
-                    let noise = rng.next_f64();
-                    let filtered = bp.process(noise, burst_freq, 800.0, SAMPLE_RATE as f64);
-                    samples.push(filtered * amp * env * 2.0 * if is_tense { 1.5 } else { 1.0 });
+                    let env = envelope(i, burst_samples, 0.1, 0.5);
+                    let n = rng.next_f64();
+                    let filtered = bp.process(n, burst_freq, 800.0, SAMPLE_RATE as f64);
+                    let tense_gain = if is_tense { 1.4 } else { 1.0 };
+                    samples.push((filtered * 5.0 + n * 0.3) * amp * env * tense_gain);
                 } else if i < burst_samples + vot_samples {
-                    // VOT 구간: 격음은 기식 노이즈, 경음은 무음, 평음은 약한 기류
+                    let env = envelope(i - burst_samples, vot_samples, 0.15, 0.4);
                     if is_aspirated {
-                        let env = envelope(i - burst_samples, vot_samples, 0.2, 0.3);
-                        let noise = rng.next_f64();
-                        let filtered = bp.process(noise, 2000.0, 2000.0, SAMPLE_RATE as f64);
-                        samples.push(filtered * amp * env * 0.6);
-                    } else if is_tense {
-                        samples.push(0.0); // 경음: 짧은 무음
+                        let n = rng.next_f64();
+                        let filtered = bp.process(n, 2000.0, 2500.0, SAMPLE_RATE as f64);
+                        samples.push((filtered * 4.0 + n * 0.15) * amp * env * 0.5);
                     } else {
-                        let env = envelope(i - burst_samples, vot_samples, 0.3, 0.3);
-                        samples.push(rng.next_f64() * amp * env * 0.15);
+                        // 평음/경음: 약한 기류 잔향
+                        samples.push(rng.next_f64() * amp * env * 0.08);
                     }
                 } else {
-                    samples.push(0.0);
+                    // 잔여 구간: 약한 기류 + 감쇠 (연결감 유지)
+                    let tail_pos = (i - burst_samples - vot_samples) as f64
+                        / (num_samples - burst_samples - vot_samples).max(1) as f64;
+                    let tail_env = (1.0 - tail_pos) * 0.15; // 서서히 감소
+                    samples.push(rng.next_f64() * amp * tail_env);
                 }
             }
         }
@@ -318,7 +318,8 @@ fn synthesize_consonant(phoneme: &str, duration_ms: f32, pitch_hz: f32, amplitud
                 let tilted = tilt.process(glottal);
                 let nasal = res.process(tilted, res_freq, res_bw, SAMPLE_RATE as f64);
                 let anti = anti_res.process(tilted, anti_freq, 200.0, SAMPLE_RATE as f64);
-                samples.push((nasal * 1.5 - anti * 0.3) * amp * env * 2.0);
+                // 글로탈 소스 직접 믹스 + 공진기 출력 (볼륨 확보)
+                samples.push((tilted * 0.3 + nasal * 3.0 - anti * 0.5) * amp * env);
                 phase += (f0 * (1.0 + jitter_val)) / SAMPLE_RATE as f64;
             }
         }
@@ -338,14 +339,16 @@ fn synthesize_consonant(phoneme: &str, duration_ms: f32, pitch_hz: f32, amplitud
             let mut bp = ResonatorState::new();
             for i in 0..half {
                 let env = envelope(i, half, 0.05, 0.5);
-                let filtered = bp.process(rng.next_f64(), 1500.0, 800.0, SAMPLE_RATE as f64);
-                samples.push(filtered * amp * env * 1.5);
+                let n = rng.next_f64();
+                let filtered = bp.process(n, 1500.0, 800.0, SAMPLE_RATE as f64);
+                samples.push((filtered * 5.0 + n * 0.15) * amp * env);
             }
             let mut bp2 = ResonatorState::new();
             for i in 0..(num_samples - half) {
                 let env = envelope(i, num_samples - half, 0.1, 0.1);
-                let filtered = bp2.process(rng.next_f64(), 5500.0, 3000.0, SAMPLE_RATE as f64);
-                samples.push(filtered * amp * env);
+                let n = rng.next_f64();
+                let filtered = bp2.process(n, 5500.0, 3000.0, SAMPLE_RATE as f64);
+                samples.push((filtered * 5.0 + n * 0.15) * amp * env);
             }
         }
         // 유음
@@ -355,22 +358,21 @@ fn synthesize_consonant(phoneme: &str, duration_ms: f32, pitch_hz: f32, amplitud
         "l" => {
             return voiced_consonant(num_samples, pitch_hz, amplitude, 400.0, 90.0, 3571, 0.15, 0.15);
         }
-        // 파찰음: 버스트 + 마찰 노이즈
+        // 파찰음: 버스트 → 마찰 노이즈 (전체 구간 채움)
         "ch" | "j" | "jj" | "jh" => {
-            let burst_len = (num_samples as f64 * 0.15) as usize;
-            let fric_len = (num_samples as f64 * 0.35) as usize;
+            let burst_len = (num_samples as f64 * 0.2) as usize;
             let mut bp = ResonatorState::new();
             for i in 0..num_samples {
+                let overall_env = envelope(i, num_samples, 0.05, 0.15);
                 if i < burst_len {
-                    let env = envelope(i, burst_len, 0.1, 0.4);
-                    let filtered = bp.process(rng.next_f64(), 3000.0, 1000.0, SAMPLE_RATE as f64);
-                    samples.push(filtered * amp * env * 1.5);
-                } else if i < burst_len + fric_len {
-                    let env = envelope(i - burst_len, fric_len, 0.2, 0.3);
-                    let filtered = bp.process(rng.next_f64(), 3500.0, 2500.0, SAMPLE_RATE as f64);
-                    samples.push(filtered * amp * env);
+                    let env = envelope(i, burst_len, 0.1, 0.3);
+                    let noise = rng.next_f64();
+                    let filtered = bp.process(noise, 3000.0, 1000.0, SAMPLE_RATE as f64);
+                    samples.push((filtered * 5.0 + noise * 0.2) * amp * env);
                 } else {
-                    samples.push(0.0);
+                    let noise = rng.next_f64();
+                    let filtered = bp.process(noise, 3500.0, 2500.0, SAMPLE_RATE as f64);
+                    samples.push((filtered * 4.0 + noise * 0.1) * amp * overall_env * 0.6);
                 }
             }
         }
@@ -590,11 +592,56 @@ pub fn synthesize_all(prosody_units: &[ProsodyUnit]) -> Vec<i16> {
         prev_type = unit.phoneme_type.clone();
     }
 
+    // 동적 범위 압축 (모음 피크가 자음을 묻지 않도록)
+    // 프레임 단위 RMS 기반 소프트 컴프레서
+    let frame_size = (SAMPLE_RATE as usize) / 100; // 10ms 프레임
+    let mut compressed = all_samples.clone();
+
+    // 1단계: 프레임별 RMS 계산
+    let num_frames = (compressed.len() + frame_size - 1) / frame_size;
+    let mut frame_rms = Vec::with_capacity(num_frames);
+    for f in 0..num_frames {
+        let start = f * frame_size;
+        let end = (start + frame_size).min(compressed.len());
+        let rms = (compressed[start..end].iter().map(|s| s * s).sum::<f64>()
+            / (end - start) as f64).sqrt();
+        frame_rms.push(rms);
+    }
+
+    // 2단계: 전체 평균 RMS 기준으로 압축
+    let nonzero_rms: Vec<f64> = frame_rms.iter().filter(|&&r| r > 0.001).cloned().collect();
+    if !nonzero_rms.is_empty() {
+        let avg_rms = nonzero_rms.iter().sum::<f64>() / nonzero_rms.len() as f64;
+        let threshold = avg_rms * 1.5; // 평균의 1.5배 이상이면 압축
+        let ratio = 3.0; // 3:1 압축비
+
+        for f in 0..num_frames {
+            if frame_rms[f] > threshold {
+                // 압축: 초과분을 ratio로 나눔
+                let excess = frame_rms[f] / threshold;
+                let gain = threshold * (1.0 + (excess - 1.0) / ratio) / frame_rms[f];
+                let start = f * frame_size;
+                let end = (start + frame_size).min(compressed.len());
+                for s in &mut compressed[start..end] {
+                    *s *= gain;
+                }
+            } else if frame_rms[f] > 0.001 && frame_rms[f] < avg_rms * 0.3 {
+                // 조용한 구간을 약간 올림 (업워드 컴프레션)
+                let boost = (avg_rms * 0.4 / frame_rms[f]).min(2.5);
+                let start = f * frame_size;
+                let end = (start + frame_size).min(compressed.len());
+                for s in &mut compressed[start..end] {
+                    *s *= boost;
+                }
+            }
+        }
+    }
+
     // 정규화 및 i16 변환
-    let max_val = all_samples.iter().map(|s| s.abs()).fold(0.0f64, f64::max);
+    let max_val = compressed.iter().map(|s| s.abs()).fold(0.0f64, f64::max);
     let scale = if max_val > 0.001 { 0.8 / max_val } else { 1.0 };
 
-    all_samples
+    compressed
         .iter()
         .map(|s| (s * scale * i16::MAX as f64) as i16)
         .collect()
