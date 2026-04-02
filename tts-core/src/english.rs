@@ -41,15 +41,8 @@ pub fn english_g2p(text: &str) -> Vec<EnglishPhoneme> {
     let words: Vec<&str> = text.split_whitespace().collect();
     let mut phonemes = Vec::new();
 
-    for (w_idx, word) in words.iter().enumerate() {
-        if w_idx > 0 {
-            phonemes.push(EnglishPhoneme {
-                symbol: "pause".into(),
-                phoneme_type: PhonemeType::Pause,
-                source: " ".into(),
-            });
-        }
-
+    for word in words.iter() {
+        // pause는 insert_pauses()가 처리 — 여기선 삽입 안 함
         let word_phonemes = word_to_phonemes(word);
         phonemes.extend(word_phonemes);
     }

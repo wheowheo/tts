@@ -53,8 +53,8 @@ fn base_duration(phoneme: &str, ptype: &PhonemeType) -> f32 {
             "r" => 40.0,
             _ => 60.0,
         },
-        PhonemeType::Pause => 200.0,
-        PhonemeType::Silence => 50.0,
+        PhonemeType::Pause => 100.0,
+        PhonemeType::Silence => 30.0,
     }
 }
 
@@ -248,7 +248,7 @@ pub fn insert_pauses(units: &mut Vec<ProsodyUnit>, text: &str) {
         units.insert(boundary, ProsodyUnit {
             phoneme: "pause".into(),
             phoneme_type: PhonemeType::Pause,
-            duration_ms: 150.0,
+            duration_ms: 100.0,
             pitch_hz: 0.0,
             amplitude: 0.0,
             source_char: " ".into(),
