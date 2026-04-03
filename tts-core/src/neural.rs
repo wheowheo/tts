@@ -40,7 +40,7 @@ pub fn synthesize(text: &str, language: &str) -> Result<NeuralAudio, String> {
                     "--text", text,
                     "--model_name", "tts_models/en/ljspeech/vits",
                     "--out_path", tmp.to_str().unwrap(),
-                    "--use_cuda",
+                    "--device", "cuda",
                 ])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -64,7 +64,7 @@ pub fn synthesize(text: &str, language: &str) -> Result<NeuralAudio, String> {
                     "--speaker_wav", speaker_wav.to_str().unwrap(),
                     "--language_idx", "ko",
                     "--out_path", tmp.to_str().unwrap(),
-                    "--use_cuda",
+                    "--device", "cuda",
                 ])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -111,7 +111,7 @@ pub fn synthesize_custom(text: &str, model_path: &str, config_path: &str) -> Res
             "--model_path", model_path,
             "--config_path", config_path,
             "--out_path", tmp.to_str().unwrap(),
-            "--use_cuda",
+            "--device", "cuda",
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
